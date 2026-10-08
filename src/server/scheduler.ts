@@ -80,11 +80,13 @@ function jobNotifyTargets(job: JobRow, channels: ChannelRow[]): ChannelRow[] {
 }
 
 export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitUntilHost): Promise<{ triggered: number; failed: number }> {
-  // 心跳：写在本轮扫描之前——即使中途被杀也已落库，仪表盘据此展示调度器
-  // 是否存活。写失败不影响本轮调度，下轮再写。
-  try {
-    await setSetting(env, KEY_SCHEDULER_HEARTBEAT, String(now));
-  } catch { /* 心跳失败可忽略 */ }
+  // 心跳降频：每 10 分钟（整 10 分钟时刻）落库一次，大幅节约 D1 写入配额。
+  // 仪表盘判定心跳超时窗口相应放宽。写失败不影响本轮调度。
+  if (Math.floor(now / 60_000) % 10 === 0) {
+    try {
+      await setSetting(env, KEY_SCHEDULER_HEARTBEAT, String(now));
+    } catch { /* 心跳失败可忽略 */ }
+  }
 
   // 告警配置整轮读一次：渠道未配置时，计数与自动停用照常进行，只是不发消息。
   // D1 瞬时错误视同无渠道，不阻断调度。
@@ -97,8 +99,9 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
   // PAT 失效按账号去重：同一失效账号的多个任务在同轮失败只推一条
   const invalidNotified = new Set<number>();
 
+  // 免费层控制单轮批次（上限 25），为 GitHub API 与监控探测预留 subrequest 预算
   const due = await env.DB.prepare(
-    "SELECT * FROM jobs WHERE enabled=1 AND next_run_at<=? ORDER BY next_run_at ASC LIMIT 50",
+    "SELECT * FROM jobs WHERE enabled=1 AND next_run_at<=? ORDER BY next_run_at ASC LIMIT 25",
   )
     .bind(now)
     .all<JobRow>();
@@ -110,7 +113,7 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
   /** 处理单个到期任务。所有异常都在这里消化，绝不外抛。 */
   async function processJob(job: JobRow): Promise<void> {
     // 逐任务 try/catch：单个任务抛异常（schedule_json 损坏、cron 无可达触发时间、
-    // 瞬时 D1 错误等）只计为 failed，不影响其余任务触发与后续 90 天清理，
+    // 瞬时 D1 错误等）只计为 failed，不影响其余任务触发与后续清理，
     // 防止单任务异常导致整个调度循环中止、scheduled handler reject。
     try {
       const v = validateSchedule(JSON.parse(job.schedule_json));
@@ -136,24 +139,23 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
       const result = await dispatchJob(env, job, account, "schedule");
       if (result.ok) {
         triggered++;
-        // 成功即清零连续失败计数（非零才写，避免每轮多余写入）
-        if ((job.fail_streak ?? 0) !== 0) {
-          await env.DB.prepare("UPDATE jobs SET fail_streak=? WHERE id=?").bind(0, job.id).run();
-        }
+        // 成功即清零连续失败计数并刷新 last_run_at（单次 UPDATE 合并，减少写入）
+        await env.DB.prepare("UPDATE jobs SET fail_streak=0, last_run_at=? WHERE id=?").bind(now, job.id).run();
       } else {
         failed++;
         // 连续失败计数与自动停用只看定时调度：手动触发意味着管理员在场，失败
         // 当场可见（toast + 运行记录），不计入无人值守的保护机制。
         const streak = (job.fail_streak ?? 0) + 1;
-        await env.DB.prepare("UPDATE jobs SET fail_streak=? WHERE id=?").bind(streak, job.id).run();
         let paused = false;
         if (threshold > 0 && streak >= threshold) {
           const pause = await env.DB.prepare(
-            "UPDATE jobs SET enabled=0, updated_at=? WHERE id=? AND enabled=1",
+            "UPDATE jobs SET enabled=0, fail_streak=?, last_run_at=?, updated_at=? WHERE id=? AND enabled=1",
           )
-            .bind(now, job.id)
+            .bind(streak, now, now, job.id)
             .run();
           paused = (pause.meta.changes ?? 0) === 1;
+        } else {
+          await env.DB.prepare("UPDATE jobs SET fail_streak=?, last_run_at=? WHERE id=?").bind(streak, now, job.id).run();
         }
         // 任务级渠道多选：关闭 / 指定若干渠道 / NULL = 全部渠道
         const jobChannels = jobNotifyTargets(job, channels);
@@ -173,17 +175,12 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
           });
         }
       }
-      await env.DB.prepare("UPDATE jobs SET last_run_at=? WHERE id=?").bind(now, job.id).run();
     } catch (e) {
       failed++;
       const msg = `调度器内部错误: ${(e as Error).message}`.slice(0, 500);
       try {
         await recordRun(env, job.id, "schedule", "failed", 0, msg);
       } catch { /* 记录失败本身失败时忽略，不影响隔离 */ }
-      // 抛错发生在乐观锁 claim 之前时 next_run_at 未推进，任务会每周期重复
-      // "到期→重抛"，形成热循环。这里用 now+30min 兜底推进（复用乐观锁，
-      // 若已推进过则不匹配、无副作用），让损坏任务降温到每 30 分钟重试一次，
-      // 而不是每分钟瘫痪式重抛。
       try {
         await env.DB.prepare(
           "UPDATE jobs SET next_run_at=?, updated_at=? WHERE id=? AND next_run_at=? AND enabled=1",
@@ -229,16 +226,19 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
   if (ctx) ctx.waitUntil(tail);
   else await tail;
 
-  // 自动清理：保留期可在界面配置（settings.runs_retention_days），缺省 90 天。
+  // 自动清理：降频为每天执行一次（UTC 03:00），避免每分钟无效 DELETE 消耗 D1 写入配额。
   // 清理失败不影响本轮触发结果，下个周期会再试。
-  try {
-    const configured = Number(await getSetting(env, KEY_RUNS_RETENTION));
-    const retentionDays = Number.isFinite(configured) && configured > 0
-      ? configured
-      : DEFAULT_RUN_RETENTION_DAYS;
-    await env.DB.prepare("DELETE FROM runs WHERE triggered_at < ?")
-      .bind(now - retentionDays * 24 * 3600 * 1000)
-      .run();
-  } catch { /* 清理失败时忽略，5 分钟后重试 */ }
+  const isDailyCleanup = new Date(now).getUTCHours() === 3 && new Date(now).getUTCMinutes() === 0;
+  if (isDailyCleanup) {
+    try {
+      const configured = Number(await getSetting(env, KEY_RUNS_RETENTION));
+      const retentionDays = Number.isFinite(configured) && configured > 0
+        ? configured
+        : DEFAULT_RUN_RETENTION_DAYS;
+      await env.DB.prepare("DELETE FROM runs WHERE triggered_at < ?")
+        .bind(now - retentionDays * 24 * 3600 * 1000)
+        .run();
+    } catch { /* 清理失败时忽略 */ }
+  }
   return { triggered, failed };
 }

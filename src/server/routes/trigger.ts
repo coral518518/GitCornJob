@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { sha256Hex } from "../crypto";
 import { runDueJobs, type WaitUntilHost } from "../scheduler";
 import { runDueMonitors } from "../monitor";
+import { KEY_SCHEDULER_HEARTBEAT, setSetting } from "../settings";
 import type { ApiTokenRow, Env } from "../types";
 
 /** 外部触发令牌校验：Bearer 令牌 → SHA-256 哈希查库，命中后更新 last_used_at。
@@ -51,6 +52,9 @@ triggerRoutes.post("/", async (c) => {
     runDueJobs(c.env, now, ctx),
     runDueMonitors(c.env, now, ctx),
   ]);
+  try {
+    await setSetting(c.env, KEY_SCHEDULER_HEARTBEAT, String(now));
+  } catch { /* 忽略 */ }
   return c.json({
     ok: true,
     data: { triggered: jobs.triggered, failed: jobs.failed, probed: monitors.probed, down: monitors.down },

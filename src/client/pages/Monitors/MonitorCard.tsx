@@ -35,7 +35,7 @@ export default function MonitorCard({ monitor: m, beats, probing, onToggle, onPr
         </a>
       </div>
 
-      <HeartbeatBar beats={beats ?? []} slots={40} onClick={onDetail} />
+      <HeartbeatBar beats={beats ?? []} slots={20} onClick={onDetail} />
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-fg-muted">
         <span className="inline-flex items-center gap-1.5 tabular-nums">

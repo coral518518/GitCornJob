@@ -13,7 +13,25 @@ function validateBody(body: Record<string, unknown>): { ok: true; name: string; 
   if (!isNotifyType(body.type)) return { ok: false, error: "通知渠道类型不合法" };
   // url 为空 = 编辑时保持原地址（不回填，避免误碰覆盖）
   const url = typeof body.url === "string" ? body.url.trim() : "";
-  if (url && !URL_RE.test(url)) return { ok: false, error: "Webhook 地址必须是 https:// 开头的完整 URL" };
+  if (url) {
+    if (!URL_RE.test(url)) return { ok: false, error: "Webhook 地址必须是 https:// 开头的完整 URL" };
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.toLowerCase();
+      if (
+        host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0" ||
+        /^10\.\d+\.\d+\.\d+$/.test(host) ||
+        /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(host) ||
+        /^192\.168\.\d+\.\d+$/.test(host) ||
+        /^169\.254\.\d+\.\d+$/.test(host) ||
+        host.endsWith(".local") || host.endsWith(".internal")
+      ) {
+        return { ok: false, error: "Webhook 地址禁止使用本地或私有内网地址" };
+      }
+    } catch {
+      return { ok: false, error: "Webhook 地址格式无效" };
+    }
+  }
   return { ok: true, name, type: body.type, url: url || null };
 }
 

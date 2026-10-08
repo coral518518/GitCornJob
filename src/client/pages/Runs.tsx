@@ -120,7 +120,7 @@ export default function Runs() {
     get<{ total: number; rows: Run[] }>(`/api/runs?${runsQuery()}`)
       .then(d => { if (alive.current && currentQuery.current === queryKey) { setTotal(d.total); setRows(d.rows); } })
       .catch(() => {});
-  }, 30_000, !cleanupOpen);
+  }, 60_000, !cleanupOpen);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const from = (page - 1) * PAGE_SIZE + 1;

@@ -9,7 +9,8 @@ import type { Env } from "./types";
 export const requireAuth = createMiddleware<{ Bindings: Env }>(async (c, next) => {
   const token = getCookie(c, "session");
   const { epoch } = await getAuthState(c.env);
-  if (!token || !(await verifySessionToken(token, c.env.ADMIN_PASSWORD, epoch))) {
+  const secret = c.env.TOKEN_ENC_KEY || c.env.ADMIN_PASSWORD;
+  if (!token || !(await verifySessionToken(token, secret, epoch))) {
     return c.json({ ok: false, error: "未登录" }, 401);
   }
   await next();

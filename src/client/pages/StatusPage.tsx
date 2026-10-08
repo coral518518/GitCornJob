@@ -20,14 +20,6 @@ export default function StatusPage() {
 
   const [data, setData] = useState<StatusPageData | null>(null);
   const [missing, setMissing] = useState(false);
-  // 登录态探测：已登录入口直达仪表盘，未登录去登录页。null = 检测中，先按访客渲染
-  const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    get("/api/auth/me")
-      .then(() => { if (alive.current) setLoggedIn(true); })
-      .catch(() => { if (alive.current) setLoggedIn(false); });
-  }, []);
 
   function load() {
     get<StatusPageData>(`/api/status/${encodeURIComponent(slug)}`)
@@ -43,7 +35,7 @@ export default function StatusPage() {
   }
 
   useEffect(load, [slug]);
-  useAutoRefresh(load, 30_000);
+  useAutoRefresh(load, 60_000);
 
   useEffect(() => {
     document.title = data?.title ?? "状态页";
@@ -61,17 +53,15 @@ export default function StatusPage() {
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-xl font-semibold text-fg">{data?.title ?? "状态页"}</h1>
           <Link
-            to={loggedIn ? "/" : "/login"}
-            aria-label={loggedIn ? "前往仪表盘" : "管理员登录"}
-            title={loggedIn ? "前往仪表盘" : "管理员登录"}
+            to="/login"
+            aria-label="管理员登录"
+            title="管理员登录"
             className={cx(
               "rounded-md p-2 text-fg-subtle",
               "transition-colors duration-fast hover:bg-panel-hover hover:text-fg",
               focusRing,
             )}>
-            {loggedIn
-              ? <LayoutDashboard className="size-4" aria-hidden />
-              : <UserRound className="size-4" aria-hidden />}
+            <UserRound className="size-4" aria-hidden />
           </Link>
         </div>
       {missing ? (
@@ -114,7 +104,7 @@ export default function StatusPage() {
                         </Badge>
                       </span>
                     </div>
-                    <HeartbeatBar beats={m.beats} slots={40} className="mt-3" />
+                    <HeartbeatBar beats={m.beats} slots={20} className="mt-3" />
                   </div>
                 );
               })}

@@ -103,8 +103,11 @@ accountRoutes.put("/:id", async (c) => {
 
 accountRoutes.delete("/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  // 三条删除必须是原子的：中间失败会留下「runs 删了、job 还在」之类的半删状态
+  const now = Date.now();
+  // 级联清理：联动引用一并置空，防 monitors 残留悬挂 id；batch 保证全原子性
   await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE monitors SET on_down_job_id=NULL, updated_at=? WHERE on_down_job_id IN (SELECT id FROM jobs WHERE account_id=?)").bind(now, id),
+    c.env.DB.prepare("UPDATE monitors SET on_up_job_id=NULL, updated_at=? WHERE on_up_job_id IN (SELECT id FROM jobs WHERE account_id=?)").bind(now, id),
     c.env.DB.prepare("DELETE FROM runs WHERE job_id IN (SELECT id FROM jobs WHERE account_id=?)").bind(id),
     c.env.DB.prepare("DELETE FROM jobs WHERE account_id=?").bind(id),
     c.env.DB.prepare("DELETE FROM accounts WHERE id=?").bind(id),

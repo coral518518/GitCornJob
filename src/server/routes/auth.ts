@@ -36,7 +36,8 @@ authRoutes.post("/login", async (c) => {
     }
     return c.json({ ok: false, error: "密码错误" }, 401);
   }
-  const token = await createSessionToken(c.env.ADMIN_PASSWORD, state.epoch);
+  const secret = c.env.TOKEN_ENC_KEY || c.env.ADMIN_PASSWORD;
+  const token = await createSessionToken(secret, state.epoch);
   setCookie(c, "session", token, {
     httpOnly: true,
     secure: true, // localhost 下现代浏览器同样接受 Secure Cookie
@@ -55,7 +56,8 @@ authRoutes.post("/logout", (c) => {
 authRoutes.get("/me", async (c) => {
   const token = getCookie(c, "session");
   const { epoch } = await getAuthState(c.env);
-  if (token && (await verifySessionToken(token, c.env.ADMIN_PASSWORD, epoch))) {
+  const secret = c.env.TOKEN_ENC_KEY || c.env.ADMIN_PASSWORD;
+  if (token && (await verifySessionToken(token, secret, epoch))) {
     return c.json({ ok: true, data: null });
   }
   return c.json({ ok: false, error: "未登录" }, 401);

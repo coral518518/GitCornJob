@@ -5,11 +5,29 @@ import type { Env, MonitorRow } from "../types";
 const statusRoutes = new Hono<{ Bindings: Env }>();
 
 const DAY = 24 * 3600 * 1000;
-const BEATS = 40;
+const BEATS = 20;
 
 // 公开状态页数据：只暴露配置选中的启用中监控，地址/错误详情在服务端裁剪
-// （心跳保留状态码与耗时供悬停展示，error_message 不出库）。
+// 边缘缓存 30s + RateLimiter 防爆破，大幅保护 D1 读配额。
 statusRoutes.get("/:slug", async (c) => {
+  // 1. IP 限流防护：防止被脚本高频刷爆数据库
+  const rl = c.env.RATE_LIMITER;
+  if (rl) {
+    const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
+    const r = await rl.limit({ key: `status:${ip}` });
+    if (!r.success) return c.json({ ok: false, error: "请求过于频繁，请稍后再试" }, 429);
+  }
+
+  // 2. 检查 Cloudflare 边缘 Cache API 缓存：若命中直接返回，不触碰 Worker CPU 与 D1
+  const cache = typeof caches !== "undefined" ? (caches as unknown as { default?: Cache }).default : undefined;
+  const cacheKey = new Request(c.req.url, { method: "GET" });
+  if (cache) {
+    try {
+      const hit = await cache.match(cacheKey);
+      if (hit) return hit;
+    } catch { /* 忽略本地/测试环境无缓存异常 */ }
+  }
+
   const cfg = await getStatusPage(c.env);
   const slug = c.req.param("slug");
   if (!cfg || cfg.enabled !== 1 || cfg.slug !== slug) {
@@ -18,6 +36,13 @@ statusRoutes.get("/:slug", async (c) => {
 
   const now = Date.now();
   const ids = [...new Set(cfg.monitor_ids)].slice(0, 20);
+  if (ids.length === 0) {
+    return c.json({
+      ok: true,
+      data: { title: cfg.title, overall: "up", monitors: [] },
+    });
+  }
+
   const monitors = (await Promise.all(
     ids.map(async (id) => {
       const m = await c.env.DB.prepare("SELECT * FROM monitors WHERE id=?").bind(id).first<MonitorRow>();
@@ -61,12 +86,25 @@ statusRoutes.get("/:slug", async (c) => {
   )).filter((m): m is NonNullable<typeof m> => m !== null);
 
   const down = monitors.filter((m) => m.status === "down").length;
-  // 浏览器短缓存，吸收页面 30s 轮询的重复请求
-  c.header("Cache-Control", "public, max-age=15");
-  return c.json({
+  c.header("Cache-Control", "public, max-age=30, s-maxage=30");
+  const res = c.json({
     ok: true,
     data: { title: cfg.title, overall: down > 0 ? "down" : "up", monitors },
   });
+
+  // 写入边缘 Cache API（缓存 30s），吸收外部并发与高频轮询
+  if (cache) {
+    try {
+      const cloned = res.clone();
+      if (c.executionCtx) {
+        c.executionCtx.waitUntil(cache.put(cacheKey, cloned));
+      } else {
+        await cache.put(cacheKey, cloned);
+      }
+    } catch { /* 忽略缓存写入失败 */ }
+  }
+
+  return res;
 });
 
 export default statusRoutes;

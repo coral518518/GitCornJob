@@ -12,8 +12,8 @@ import type { Env, MonitorRow } from "./types";
 
 /** 单轮探测并发度：单探测最坏 30s 超时，并发 5 压住 cron 触发的墙钟窗口。 */
 const PROBE_CONCURRENCY = 5;
-/** 每轮探测上限：探测与任务派发/GitHub 追踪/通知共享免费版单次调用 50 subrequest 预算。 */
-const PROBES_PER_WAKE = 20;
+/** 每轮探测上限：探测与任务派发/GitHub 追踪/通知共享免费版单次调用 50 subrequest 预算（设为 15 留足余量）。 */
+const PROBES_PER_WAKE = 15;
 /** 关键词检查最多读取的响应体字节数：只需"包含"判定，读完超大响应纯属浪费。 */
 const KEYWORD_MAX_BYTES = 1024 * 1024;
 
@@ -218,12 +218,6 @@ export async function probeAndRecord(
   fetchFn: typeof fetch = fetch,
 ): Promise<ProbeOutcome> {
   const result = await probeMonitor(monitor, fetchFn);
-  await env.DB.prepare(
-    "INSERT INTO heartbeats (monitor_id, created_at, status, http_status, latency_ms, error_message) VALUES (?,?,?,?,?,?)",
-  )
-    .bind(monitor.id, now, result.status, result.http_status, result.latency_ms, result.error)
-    .run();
-
   const prevStatus = monitor.status;
   let failStreak = monitor.fail_streak ?? 0;
   let status = prevStatus;
@@ -240,6 +234,26 @@ export async function probeAndRecord(
       status = "down";
     }
   }
+
+  // 心跳采样与状态变动记录：状态转换、探测异常(down)、手动探测、或每 10 分钟整点采样一次。
+  // 正常 UP 且无状态变动时跳过无谓的 heartbeats 插入，大幅节省 D1 写入配额。
+  const isSampleTime = Math.floor(now / 60_000) % 10 === 0;
+  const shouldRecordBeat =
+    source === "manual" ||
+    result.status === "down" ||
+    downTransition ||
+    upTransition ||
+    isSampleTime ||
+    monitor.last_run_at == null;
+
+  if (shouldRecordBeat) {
+    await env.DB.prepare(
+      "INSERT INTO heartbeats (monitor_id, created_at, status, http_status, latency_ms, error_message) VALUES (?,?,?,?,?,?)",
+    )
+      .bind(monitor.id, now, result.status, result.http_status, result.latency_ms, result.error)
+      .run();
+  }
+
   await env.DB.prepare(
     "UPDATE monitors SET status=?, fail_streak=?, last_latency_ms=?, last_run_at=?, updated_at=? WHERE id=?",
   )
@@ -404,17 +418,20 @@ export async function runDueMonitors(
   if (ctx) ctx.waitUntil(tail);
   else await tail;
 
-  // 心跳保留期清理：每监控每天最多 1440 条（1 分钟粒度），默认 30 天。清理失败
-  // 不影响本轮探测结果，下个周期会再试。
-  try {
-    const configured = Number(await getSetting(env, KEY_HEARTBEATS_RETENTION));
-    const retentionDays = Number.isFinite(configured) && configured > 0
-      ? configured
-      : DEFAULT_HEARTBEAT_RETENTION_DAYS;
-    await env.DB.prepare("DELETE FROM heartbeats WHERE created_at < ?")
-      .bind(now - retentionDays * 24 * 3600 * 1000)
-      .run();
-  } catch { /* 清理失败时忽略，下轮重试 */ }
+  // 心跳保留期清理：降频为每天执行一次（UTC 03:00），避免每分钟无效 DELETE 消耗 D1 写入配额。
+  // 清理失败不影响本轮探测结果，下个周期会再试。
+  const isDailyCleanup = new Date(now).getUTCHours() === 3 && new Date(now).getUTCMinutes() === 0;
+  if (isDailyCleanup) {
+    try {
+      const configured = Number(await getSetting(env, KEY_HEARTBEATS_RETENTION));
+      const retentionDays = Number.isFinite(configured) && configured > 0
+        ? configured
+        : DEFAULT_HEARTBEAT_RETENTION_DAYS;
+      await env.DB.prepare("DELETE FROM heartbeats WHERE created_at < ?")
+        .bind(now - retentionDays * 24 * 3600 * 1000)
+        .run();
+    } catch { /* 清理失败时忽略 */ }
+  }
 
   return { probed, down };
 }

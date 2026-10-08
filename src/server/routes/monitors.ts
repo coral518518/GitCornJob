@@ -71,6 +71,17 @@ function validateMonitorBody(body: Record<string, unknown>): { ok: true; data: M
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return { ok: false, error: "URL 必须是 http/https 地址" };
     }
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0" ||
+      /^10\.\d+\.\d+\.\d+$/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(host) ||
+      /^192\.168\.\d+\.\d+$/.test(host) ||
+      /^169\.254\.\d+\.\d+$/.test(host) ||
+      host.endsWith(".local") || host.endsWith(".internal")
+    ) {
+      return { ok: false, error: "禁止使用本地或私有内网地址" };
+    }
   } catch {
     return { ok: false, error: "URL 格式无效" };
   }
@@ -210,7 +221,7 @@ monitorRoutes.get("/", async (c) => {
 // 各监控最近 N 次心跳（列表卡片条带用）。监控数量少，逐监控走 (monitor_id,
 // created_at DESC) 索引的小查询，比全表窗口函数扫描划算；返回旧→新排序。
 monitorRoutes.get("/beats", async (c) => {
-  const per = Math.min(100, Math.max(10, Number(c.req.query("per") ?? 40) || 40));
+  const per = Math.min(100, Math.max(10, Number(c.req.query("per") ?? 20) || 20));
   const ids = await c.env.DB.prepare("SELECT id FROM monitors").all<{ id: number }>();
   const out: Record<number, unknown[]> = {};
   await Promise.all((ids.results ?? []).map(async (m) => {

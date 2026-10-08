@@ -23,7 +23,7 @@ type Props = {
 
 /** 心跳条带：每格一次探测，绿=成功 红=失败 灰=暂无数据，
  * 原生 title 提示详情。纯 div 实现，无图表库依赖。 */
-export default function HeartbeatBar({ beats, slots = 40, size = "sm", className, onClick }: Props) {
+export default function HeartbeatBar({ beats, slots = 20, size = "sm", className, onClick }: Props) {
   // 不足补位放在左侧：右侧对齐最新的探测，与时间轴方向一致
   const pad = Math.max(0, slots - beats.length);
   const shown = beats.slice(-slots);

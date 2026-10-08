@@ -15,8 +15,8 @@ export const TRACK_WINDOW_MS = 24 * 3600 * 1000;
  *  时钟偏差 + GitHub 侧入队延迟。 */
 const CREATED_BEFORE_MS = 2 * 60 * 1000;
 
-/** 单轮追踪的 runs 上限：与调度器单轮 50 任务同量级，防极端积压拖长 scheduled。 */
-const TRACK_LIMIT = 100;
+/** 单轮追踪的 runs 上限：设为 20，避免突发积压撞上 Cloudflare 免费版单请求 50 subrequest 硬上限。 */
+const TRACK_LIMIT = 20;
 
 /** GitHub 列表分页大小：窗口内匹配足够；长跑 run 掉出分页时走 getWorkflowRun 兜底 */
 const LIST_PER_PAGE = 20;
@@ -123,8 +123,9 @@ export async function pollGhRuns(
     return r.status === "completed" && r.conclusion !== null;
   }
 
-  // repo 级去重：同 repo 多个待追踪行共享一次列表拉取（速率友好）。
+  // repo 级去重：同 repo 多个待追踪行共享一次列表拉取与已占用 run 集合（速率友好、省 D1 读）。
   const repoListCache = new Map<string, WorkflowRunSummary[] | null>();
+  const takenCache = new Map<string, Set<number>>();
 
   // 逐行处理；行内异常消化，不影响其余行。
   for (const row of rows) {
@@ -155,7 +156,7 @@ export async function pollGhRuns(
           if (!res.ok) continue; // GitHub 侧异常：本轮跳过，下轮重试
         }
         if (!list) continue;
-        current = await matchRun(row, list, env, now);
+        current = await matchRun(row, list, env, now, takenCache);
       }
 
       if (!current) continue; // 没匹配到：保持 waiting，下轮再试（窗口内）
@@ -225,21 +226,27 @@ async function matchRun(
   list: WorkflowRunSummary[],
   env: Env,
   now: number,
+  takenCache?: Map<string, Set<number>>,
 ): Promise<WorkflowRunSummary | null> {
   const windowStart = row.triggered_at - CREATED_BEFORE_MS;
-  // 排除已占用：查同 repo 其他 runs 行已绑定的 gh_run_id。
+  // 排除已占用：查同 repo 其他 runs 行已绑定的 gh_run_id（优先读缓存，避免 N+1 查询）。
   let taken: Set<number>;
-  try {
-    const takenRows = await env.DB.prepare(
-      `SELECT DISTINCT r2.gh_run_id AS gid FROM runs r2
-       JOIN jobs j2 ON r2.job_id = j2.id
-       WHERE r2.gh_run_id IS NOT NULL AND j2.repo = ?`,
-    )
-      .bind(row.repo)
-      .all<{ gid: number }>();
-    taken = new Set((takenRows.results ?? []).map((r) => r.gid));
-  } catch {
-    taken = new Set(); // 查询失败时不做占用排除（宽松匹配优于放弃）
+  if (takenCache && takenCache.has(row.repo)) {
+    taken = takenCache.get(row.repo)!;
+  } else {
+    try {
+      const takenRows = await env.DB.prepare(
+        `SELECT DISTINCT r2.gh_run_id AS gid FROM runs r2
+         JOIN jobs j2 ON r2.job_id = j2.id
+         WHERE r2.gh_run_id IS NOT NULL AND j2.repo = ?`,
+      )
+        .bind(row.repo)
+        .all<{ gid: number }>();
+      taken = new Set((takenRows.results ?? []).map((r) => r.gid));
+    } catch {
+      taken = new Set();
+    }
+    if (takenCache) takenCache.set(row.repo, taken);
   }
 
   const candidates = list

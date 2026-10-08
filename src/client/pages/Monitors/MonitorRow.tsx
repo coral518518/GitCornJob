@@ -34,7 +34,7 @@ export default function MonitorRow({ monitor: m, beats, probing, onToggle, onPro
         </a>
       </td>
       <td className="p-3 text-center"><Badge tone={badge.tone}>{badge.label}</Badge></td>
-      <td className="p-3"><HeartbeatBar beats={beats ?? []} slots={28} onClick={onDetail} /></td>
+      <td className="p-3"><HeartbeatBar beats={beats ?? []} slots={20} onClick={onDetail} /></td>
       <td className="p-3 text-xs whitespace-nowrap tabular-nums">
         {m.uptime_24h !== null ? (
           <>

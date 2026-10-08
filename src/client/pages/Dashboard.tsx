@@ -56,9 +56,8 @@ const CARDS: StatCard[] = [
 /** 侧栏「即将运行」最多展示的条数 */
 const UPCOMING_LIMIT = 10;
 
-// 心跳超过 5 个调度周期（cron 每分钟一跳，免费计划的触发延迟约 1 分钟）未更新，
-// 判定定时触发链路停了。阈值不压到 2-3 个周期，给触发延迟的抖动留余量防误报。
-const HEARTBEAT_STALE_MS = 5 * 60_000;
+// 心跳降频为每 10 分钟写入一次，判断定时链路停顿的超时阈值放宽至 25 分钟（容许 2 个周期未写入 + 抖动）
+const HEARTBEAT_STALE_MS = 25 * 60_000;
 
 // next_run_at 已过但尚未被调度器认领（通常不超过一个调度周期）时显示「即将」，
 // 否则相对时间会算出「3 分钟前」这种过去式，读起来像已经跑完了。
@@ -94,8 +93,8 @@ export default function Dashboard() {
 
   useEffect(load, []);
 
-  // 自动刷新：统计/最近运行/即将运行每 30 秒重拉，页面不可见时暂停
-  useAutoRefresh(load, 30_000);
+  // 自动刷新：统计/最近运行/即将运行每 60 秒重拉（节约免费额度），页面不可见时暂停
+  useAutoRefresh(load, 60_000);
 
   // 只看已启用的任务，按下次触发时间升序；filter 已产生新数组，sort 不会动 state
   const upcoming = jobs === null

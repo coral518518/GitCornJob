@@ -74,7 +74,7 @@ export default function Monitors() {
   async function load() {
     const [monitors, recentBeats] = await Promise.all([
       get<Monitor[]>("/api/monitors"),
-      get<Record<number, Heartbeat[]>>("/api/monitors/beats?per=40"),
+      get<Record<number, Heartbeat[]>>("/api/monitors/beats?per=20"),
     ]);
     if (!alive.current) return;
     setList(monitors);

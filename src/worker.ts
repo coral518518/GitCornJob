@@ -44,11 +44,17 @@ app.all("/api/*", (c) => c.json({ ok: false, error: "Not Found" }, 404));
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default {
-  fetch: (req: Request, env: Env, ctx: ExecutionContext) =>
-    ensureMigrated(env).then(() => app.fetch(req, env, ctx)),
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
+    const url = new URL(req.url);
+    if (!url.pathname.startsWith("/api/")) {
+      return env.ASSETS.fetch(req);
+    }
+    return ensureMigrated(env).then(() => app.fetch(req, env, ctx));
+  },
   scheduled: async (_event: ScheduledController, env: Env, ctx: ExecutionContext) => {
     await ensureMigrated(env);
-    await runDueJobs(env, Date.now(), ctx);
-    await runDueMonitors(env, Date.now(), ctx);
+    const now = Date.now();
+    await runDueJobs(env, now, ctx);
+    await runDueMonitors(env, now, ctx);
   },
 } satisfies ExportedHandler<Env>;

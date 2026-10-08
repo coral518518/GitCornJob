@@ -136,7 +136,7 @@ export default function MonitorDetail({ monitor, onClose }: Props) {
           ) : beats.length === 0 ? (
             <p className="text-sm text-fg-subtle">还没有探测记录，等调度器跑一轮或点列表卡片的「立即检测」。</p>
           ) : (
-            <HeartbeatBar beats={beats} slots={50} size="lg" />
+            <HeartbeatBar beats={beats} slots={20} size="lg" />
           )}
         </section>
 
