@@ -16,6 +16,7 @@ import { requireAuth } from "./server/middleware";
 import { runDueJobs } from "./server/scheduler";
 import { runDueMonitors } from "./server/monitor";
 import { ensureMigrated } from "./server/migrations";
+import { PrismWorker, type AuthenticatedRequest, type PrismEnv, type PrismUser } from "prism-authts";
 import type { Env } from "./server/types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -43,13 +44,57 @@ app.route("/api", protectedApi);
 app.all("/api/*", (c) => c.json({ ok: false, error: "Not Found" }, 404));
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default {
-  fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
-    const url = new URL(req.url);
-    if (!url.pathname.startsWith("/api/")) {
-      return env.ASSETS.fetch(req);
+/**
+ * 基于 prism-authts 的站点最外层 SSO 网关：
+ * 1. 访问站点页面时：若无 Prism 鉴权直接 302 重定向到 Prism 鉴权；鉴权完成自动跳回。
+ * 2. 接口 (/api/*) 与静态资源白名单放行：接口由内部 Hono 的 requireAuth 校验管理员密码，无需 Prism 鉴权。
+ * 3. 两层鉴权并存：先过 Prism SSO 网关，再输入管理员密码登录系统。
+ */
+class GatewayWorker extends PrismWorker {
+  override isPublic(url: URL, request: Request): boolean {
+    // 接口无需 Prism 鉴权，由内部 Hono 处理管理员会话及 API 令牌
+    if (url.pathname.startsWith("/api/")) {
+      return true;
     }
-    return ensureMigrated(env).then(() => app.fetch(req, env, ctx));
+    // 静态资源与图标无需重复鉴权
+    if (url.pathname.startsWith("/assets/") || url.pathname === "/favicon.ico") {
+      return true;
+    }
+    return super.isPublic(url, request);
+  }
+
+  override async handleRequest(
+    request: AuthenticatedRequest,
+    env: PrismEnv,
+    ctx: ExecutionContext,
+    _user: PrismUser | null
+  ): Promise<Response> {
+    const fullEnv = env as unknown as Env;
+    const url = new URL(request.url);
+    if (!url.pathname.startsWith("/api/")) {
+      return fullEnv.ASSETS.fetch(request);
+    }
+    await ensureMigrated(fullEnv);
+    return app.fetch(request, fullEnv, ctx);
+  }
+}
+
+const gateway = new GatewayWorker();
+
+export default {
+  fetch: async (req: Request, env: Env, ctx: ExecutionContext) => {
+    // 若未配置 Prism 相关环境变量（如未启用 Prism 或本地调试），优雅降级为直接访问
+    if (!env.PRISM_URL || !env.PRISM_CLIENT_ID || !env.PRISM_CLIENT_SECRET) {
+      const url = new URL(req.url);
+      if (!url.pathname.startsWith("/api/")) {
+        return env.ASSETS.fetch(req);
+      }
+      await ensureMigrated(env);
+      return app.fetch(req, env, ctx);
+    }
+
+    // 已配置 Prism：由 prism-authts 作为最外层门禁拦截未登录访问，通过后方可进入系统输入管理员密码
+    return gateway.fetch(req, env as unknown as PrismEnv, ctx);
   },
   scheduled: async (_event: ScheduledController, env: Env, ctx: ExecutionContext) => {
     await ensureMigrated(env);

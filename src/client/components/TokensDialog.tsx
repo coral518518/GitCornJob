@@ -99,7 +99,7 @@ export default function TokensDialog({ open, onClose }: Props) {
   const bodyView = created ? "created" : creating ? "form" : "list";
 
   return (
-    <Dialog open={open} onClose={close} title="API 令牌" width="max-w-lg"
+    <Dialog open={open} onClose={close} title="API 令牌" width="max-w-lg" closeOnClickOutside={false}
       footer={bodyView === "form" ? (
         <>
           <Button variant="secondary" onClick={() => setCreating(false)}>取消</Button>

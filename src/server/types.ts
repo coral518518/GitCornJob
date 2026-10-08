@@ -9,6 +9,16 @@ export type Env = {
   ADMIN_PASSWORD: string;
   TOKEN_ENC_KEY: string;
   RATE_LIMITER?: RateLimiterBinding;
+  /** Prism OAuth2 / OIDC 服务端基础地址（例如 https://auth.example.com） */
+  PRISM_URL?: string;
+  /** Prism OAuth2 Client ID */
+  PRISM_CLIENT_ID?: string;
+  /** Prism OAuth2 Client Secret */
+  PRISM_CLIENT_SECRET?: string;
+  /** Prism Cookie 共享域名（可选，例如 .example.com） */
+  COOKIE_DOMAIN?: string;
+  /** Prism OAuth Scope（可选，默认 openid profile email） */
+  PRISM_SCOPE?: string;
 };
 
 export type AccountRow = {

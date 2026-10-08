@@ -10,3 +10,4 @@ dist/
 .zcode/
 /scripts/
 /gui-test-screenshots/
+wrangler.jsonc

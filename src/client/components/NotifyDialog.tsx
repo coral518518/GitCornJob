@@ -171,7 +171,7 @@ export default function NotifyDialog({ open, onClose }: { open: boolean; onClose
   const activeHint = CHANNEL_TYPES.find((t) => t.value === type);
 
   return (
-    <Dialog open={open} onClose={close} title="通知设置" width="max-w-lg"
+    <Dialog open={open} onClose={close} title="通知设置" width="max-w-lg" closeOnClickOutside={false}
       footer={editing === null ? (
         <Button variant="secondary" onClick={close}>关闭</Button>
       ) : (

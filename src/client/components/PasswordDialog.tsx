@@ -46,7 +46,7 @@ export default function PasswordDialog({ open, onClose }: Props) {
   }
 
   return (
-    <Dialog open={open} onClose={close} title="修改管理员密码" width="max-w-sm"
+    <Dialog open={open} onClose={close} title="修改管理员密码" width="max-w-sm" closeOnClickOutside={false}
       footer={!done && (
         <>
           <Button variant="secondary" onClick={close}>取消</Button>

@@ -9,13 +9,22 @@ type Props = {
   children: ReactNode;
   footer?: ReactNode;
   width?: string;
+  closeOnClickOutside?: boolean;
 };
 
 /**
  * 基于原生 <dialog>：焦点锁定、Esc 关闭、背景惰性化、::backdrop 全由浏览器提供，
  * 不需要手写焦点陷阱。
  */
-export function Dialog({ open, onClose, title, children, footer, width = "max-w-md" }: Props) {
+export function Dialog({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+  width = "max-w-md",
+  closeOnClickOutside = true,
+}: Props) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const bodyId = `${titleId}-body`;
@@ -51,7 +60,7 @@ export function Dialog({ open, onClose, title, children, footer, width = "max-w-
       ref={ref}
       aria-labelledby={titleId}
       aria-describedby={children ? bodyId : undefined}
-      onClick={e => { if (e.target === ref.current) onClose(); }}
+      onClick={e => { if (closeOnClickOutside && e.target === ref.current) onClose(); }}
       className={cx(
         "m-auto w-full rounded-xl border border-border bg-panel p-0 text-fg shadow-xl",
         "open:animate-in-pop backdrop:bg-black/50",
