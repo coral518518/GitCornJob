@@ -77,7 +77,7 @@ export default function Layout() {
   // 已知局限：任务/账号的新建与删除走同页抽屉（不换路由），那时徽章仍停在旧值。
   useEffect(() => {
     let alive = true;
-    get<Stats>("/api/stats").then(s => { if (alive) setStats(s); }).catch(() => {});
+    get<Stats>("/api/stats").then(s => { if (alive) setStats(s); }).catch(() => { });
     return () => { alive = false; };
   }, [loc.pathname]);
 
@@ -112,7 +112,7 @@ export default function Layout() {
   const brand = (
     <div className="flex items-center gap-2">
       <Logo className="size-7" />
-      <span className="truncate text-base font-semibold tracking-tight text-fg">Actions Cronhub</span>
+      <span className="truncate text-base font-semibold tracking-tight text-fg">Actions Cronjob</span>
     </div>
   );
 

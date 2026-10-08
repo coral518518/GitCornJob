@@ -1,27 +1,37 @@
 {
-  "name": "cronjob",
-  "main": "src/worker.ts",
-  "compatibility_date": "2026-08-01",
-  // 平台定时调度触发器。免费计划的 Cron 触发器配额共 5 个：若配额已满导致
-  // 部署失败，删除整个 triggers 块再部署，改用「账户 → API 令牌」的外部触发
-  // 接口驱动调度（POST /api/trigger，见 README「外部触发与调度来源」）。
-  "triggers": { "crons": ["* * * * *"] },
-  "assets": {
-    "directory": "./dist/client",
-    "not_found_handling": "single-page-application",
-    "binding": "ASSETS"
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "cronjob_db"
-    }
-  ],
-  "ratelimits": [
-    {
-      "name": "RATE_LIMITER",
-      "namespace_id": "1001",
-      "simple": { "limit": 5, "period": 60 }
-    }
-  ]
+	"name": "cronjob",
+	"main": "src/worker.ts",
+	"compatibility_date": "2026-08-01",
+	// 平台定时调度触发器。免费计划的 Cron 触发器配额共 5 个：若配额已满导致
+	// 部署失败，删除整个 triggers 块再部署，改用「账户 → API 令牌」的外部触发
+	// 接口驱动调度（POST /api/trigger，见 README「外部触发与调度来源」）。
+	"workers_dev": false,
+	"triggers": {
+		"crons": [
+			"* * * * *"
+		]
+	},
+	"assets": {
+		"directory": "./dist/client",
+		"not_found_handling": "single-page-application",
+		"binding": "ASSETS"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "cronjob_db",
+			"migrations_dir": "../../migrations",
+			"database_id": "cd965d31-203e-48a7-9f57-6afb2a450e11"
+		}
+	],
+	"ratelimits": [
+		{
+			"name": "RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 5,
+				"period": 60
+			}
+		}
+	]
 }

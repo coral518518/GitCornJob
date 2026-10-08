@@ -42,7 +42,7 @@ export default function Login() {
             <div className="mb-6 flex flex-col items-center gap-3">
               <Logo className="size-10" />
               <div className="text-center">
-                <h1 className="text-base font-semibold">Actions Cronhub</h1>
+                <h1 className="text-base font-semibold">Actions Cronjob</h1>
                 <p className="mt-0.5 text-xs text-fg-muted">输入管理密码以继续</p>
               </div>
             </div>

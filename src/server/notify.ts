@@ -32,13 +32,13 @@ export async function getChannel(env: Env, id: number): Promise<ChannelRow | nul
 
 export type NotifyPayload = {
   event:
-    | "job_failed"
-    | "job_auto_paused"
-    | "account_invalid"
-    | "workflow_failed"
-    | "monitor_down"
-    | "monitor_up"
-    | "test";
+  | "job_failed"
+  | "job_auto_paused"
+  | "account_invalid"
+  | "workflow_failed"
+  | "monitor_down"
+  | "monitor_up"
+  | "test";
   title: string;
   body: string;
 };
@@ -63,7 +63,7 @@ export function buildNotifyRequest(cfg: { type: NotifyType; url: string }, p: No
       // URL 自带 chat_id：https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>
       return { url: cfg.url, headers: JSON_HEADERS, body: JSON.stringify({ text: p.body ? `<b>${escHtml(p.title)}</b>\n${escHtml(p.body)}` : `<b>${escHtml(p.title)}</b>`, parse_mode: "HTML" }) };
     case "bark": // Bark（iOS 推送），url 形如 https://api.day.app/<deviceKey>
-      return { url: cfg.url, headers: JSON_HEADERS, body: JSON.stringify({ title: p.title, body: p.body, group: "Cronhub" }) };
+      return { url: cfg.url, headers: JSON_HEADERS, body: JSON.stringify({ title: p.title, body: p.body, group: "Cronjob" }) };
     case "generic": // 通用 JSON POST，原文透传全部字段
       return { url: cfg.url, headers: JSON_HEADERS, body: JSON.stringify(p) };
   }

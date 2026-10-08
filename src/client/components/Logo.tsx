@@ -11,7 +11,7 @@ type Props = { className?: string };
 export function Logo({ className }: Props) {
   return (
     <span className={cx("grid shrink-0 place-items-center rounded-[28%] bg-fg text-surface", className)}>
-      {/* viewBox 32：粗「C」弧开口朝右（Cronhub），播放三角尖端探入开口（Actions 触发运行）。 */}
+      {/* viewBox 32：粗「C」弧开口朝右（Cronjob），播放三角尖端探入开口（Actions 触发运行）。 */}
       <svg viewBox="0 0 32 32" className="size-[72%]" aria-hidden="true" focusable="false">
         <path d="M22.96 11.13 A8.5 8.5 0 1 0 22.96 20.87"
           fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" />
