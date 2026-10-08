@@ -77,8 +77,8 @@ function nextUtc(f: CronFields, expr: string, fromMs: number): number {
 
   // 搜索起点：fromMs 截断到整分钟后 +1 分钟（严格晚于 fromMs）
   const start = new Date(fromMs);
-  start.setSeconds(0, 0);
-  start.setMinutes(start.getMinutes() + 1);
+  start.setUTCSeconds(0, 0);
+  start.setUTCMinutes(start.getUTCMinutes() + 1);
   const startDay = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
   const startTod = start.getTime() - startDay; // 起点在当天内的毫秒偏移
 
@@ -169,11 +169,12 @@ function nextInZone(f: CronFields, expr: string, fromMs: number, tz: string): nu
     for (const h of hours) {
       const hourMs = h * 3_600_000;
       if (hourMs + minutes[minutes.length - 1] * 60_000 < minTod) continue;
-      const m = minutes.find((min) => hourMs + min * 60_000 >= minTod);
-      if (m === undefined) continue;
-      // DST 重复/缺失可能把候选换算出 <= fromMs 的瞬间，跳过该候选继续找
-      const t = wallToUtc({ year, month, day, hour: h, minute: m }, tz);
-      if (t > fromMs) return t;
+      for (const m of minutes) {
+        if (hourMs + m * 60_000 < minTod) continue;
+        // DST 重复/缺失可能把候选换算出 <= fromMs 的瞬间，跳过该候选继续找
+        const t = wallToUtc({ year, month, day, hour: h, minute: m }, tz);
+        if (t > fromMs) return t;
+      }
     }
   }
   throw new Error(`cron 表达式在 366 天内无匹配时间: "${expr}"`);

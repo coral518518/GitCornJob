@@ -129,6 +129,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at INTEGER NOT NULL
 );
 
+INSERT OR IGNORE INTO schema_migrations (id, name, applied_at) VALUES
+  (1, 'notify-fail-streak-timezone-channels', 1700000000000),
+  (2, 'gh-run-tracking', 1700000000000),
+  (3, 'heartbeat-monitors', 1700000000000),
+  (4, 'monitor-pause-window', 1700000000000),
+  (5, 'api-tokens', 1700000000000);
+
 -- ============================================================
 -- 字段与维护说明
 -- ============================================================

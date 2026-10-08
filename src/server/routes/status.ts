@@ -96,8 +96,10 @@ statusRoutes.get("/:slug", async (c) => {
   if (cache) {
     try {
       const cloned = res.clone();
-      if (c.executionCtx) {
-        c.executionCtx.waitUntil(cache.put(cacheKey, cloned));
+      let ctx: { waitUntil(promise: Promise<unknown>): void } | undefined;
+      try { ctx = c.executionCtx; } catch { /* 测试环境无 ExecutionContext */ }
+      if (ctx) {
+        ctx.waitUntil(cache.put(cacheKey, cloned));
       } else {
         await cache.put(cacheKey, cloned);
       }

@@ -2,7 +2,7 @@
 // workflow 是否真的跑完、成败与否由本模块轮询 GitHub Runs API 回填到 runs 表的
 // gh_* 列。与调度器同样遵循「尽力而为」：任何 GitHub/D1 异常只影响本轮追踪，
 // 绝不外抛、绝不影响触发循环本身。
-import { decryptText } from "./crypto";
+import { decryptText, getEncryptionKey } from "./crypto";
 import { getWorkflowRun, listWorkflowRuns, type WorkflowRunSummary } from "./github";
 import { notifyWorkflowFailed, sendNotify, type ChannelRow, type NotifyPayload } from "./notify";
 import type { AccountRow, Env, JobRow } from "./types";
@@ -15,8 +15,8 @@ export const TRACK_WINDOW_MS = 24 * 3600 * 1000;
  *  时钟偏差 + GitHub 侧入队延迟。 */
 const CREATED_BEFORE_MS = 2 * 60 * 1000;
 
-/** 单轮追踪的 runs 上限：设为 20，避免突发积压撞上 Cloudflare 免费版单请求 50 subrequest 硬上限。 */
-const TRACK_LIMIT = 20;
+/** 单轮追踪的 runs 上限：设为 15，避免并发请求撞上 Cloudflare 免费版单请求 50 subrequest 硬上限。 */
+const TRACK_LIMIT = 15;
 
 /** GitHub 列表分页大小：窗口内匹配足够；长跑 run 掉出分页时走 getWorkflowRun 兜底 */
 const LIST_PER_PAGE = 20;
@@ -67,7 +67,7 @@ export async function pollGhRuns(
      FROM runs r JOIN jobs j ON r.job_id = j.id
      WHERE r.status='success' AND r.gh_state IN ('waiting','running')
        AND r.triggered_at > ?
-     ORDER BY r.triggered_at ASC LIMIT ?`,
+     ORDER BY CASE WHEN r.gh_state='waiting' THEN 0 ELSE 1 END, r.triggered_at DESC LIMIT ?`,
   )
     .bind(cutoff, TRACK_LIMIT)
     .all<TrackRow & { account_id: number }>();
@@ -88,13 +88,14 @@ export async function pollGhRuns(
   const result: RunTrackResult = { matched: 0, updated: 0, expired: expired.results?.length ?? 0 };
   if (rows.length === 0) return result;
 
-  // 账号与渠道整轮读一次；PAT 解密失败（TOKEN_ENC_KEY 变更）跳过该账号本轮。
+  // 账号与渠道整轮读一次；PAT 解密失败跳过该账号本轮。
   const accounts = new Map<number, { token: string; login: string | null }>();
+  const encKey = getEncryptionKey(env);
   for (const accountId of new Set(rows.map((r) => r.account_id))) {
     try {
       const account = await env.DB.prepare("SELECT * FROM accounts WHERE id=?").bind(accountId).first<AccountRow>();
       if (!account) continue;
-      accounts.set(accountId, { token: await decryptText(account.token_encrypted, env.TOKEN_ENC_KEY), login: account.github_login });
+      accounts.set(accountId, { token: await decryptText(account.token_encrypted, encKey), login: account.github_login });
     } catch { /* 解密失败/账号缺失：该账号本轮跳过，行保持原态下轮再试 */ }
   }
   let channels: ChannelRow[] = [];
@@ -250,9 +251,13 @@ async function matchRun(
   }
 
   const candidates = list
-    .filter((r) => r.created_at >= windowStart && r.created_at <= now)
+    .filter((r) => r.created_at >= windowStart && r.created_at <= now + 60_000)
     .filter((r) => !taken.has(r.run_id))
-    .filter((r) => (row.trigger_type === "workflow_dispatch" ? row.ref : null) == null || r.head_branch === row.ref);
+    .filter((r) => {
+      if (row.trigger_type !== "workflow_dispatch" || !row.ref) return true;
+      const cleanRef = row.ref.replace(/^refs\/heads\//, "");
+      return r.head_branch === row.ref || r.head_branch === cleanRef;
+    });
   if (candidates.length === 0) return null;
   // created_at 最接近 triggered_at 者
   let best = candidates[0];

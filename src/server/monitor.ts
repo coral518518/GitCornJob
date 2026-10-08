@@ -7,13 +7,14 @@ import {
   DEFAULT_HEARTBEAT_RETENTION_DAYS,
   KEY_HEARTBEATS_RETENTION,
   getSetting,
+  setSetting,
 } from "./settings";
 import type { Env, MonitorRow } from "./types";
 
 /** 单轮探测并发度：单探测最坏 30s 超时，并发 5 压住 cron 触发的墙钟窗口。 */
 const PROBE_CONCURRENCY = 5;
-/** 每轮探测上限：探测与任务派发/GitHub 追踪/通知共享免费版单次调用 50 subrequest 预算（设为 15 留足余量）。 */
-const PROBES_PER_WAKE = 15;
+/** 每轮探测上限：探测与任务派发(15)/GitHub 追踪(15)/通知共享免费版单次调用 50 subrequest 预算（设为 10 留足余量）。 */
+const PROBES_PER_WAKE = 10;
 /** 关键词检查最多读取的响应体字节数：只需"包含"判定，读完超大响应纯属浪费。 */
 const KEYWORD_MAX_BYTES = 1024 * 1024;
 
@@ -418,9 +419,11 @@ export async function runDueMonitors(
   if (ctx) ctx.waitUntil(tail);
   else await tail;
 
-  // 心跳保留期清理：降频为每天执行一次（UTC 03:00），避免每分钟无效 DELETE 消耗 D1 写入配额。
-  // 清理失败不影响本轮探测结果，下个周期会再试。
-  const isDailyCleanup = new Date(now).getUTCHours() === 3 && new Date(now).getUTCMinutes() === 0;
+  // 心跳保留期清理：每日执行一次（距上次清理超过 24 小时，且处于 UTC 03:00 窗口期或已严重超时），
+  // 记录上次清理时间，防止整点分钟抖动导致整天漏跑。
+  const lastCleanupStr = await getSetting(env, "last_heartbeats_cleanup_at").catch(() => null);
+  const lastCleanup = Number(lastCleanupStr) || 0;
+  const isDailyCleanup = now - lastCleanup >= 24 * 3600 * 1000 && (new Date(now).getUTCHours() >= 3 || now - lastCleanup >= 28 * 3600 * 1000);
   if (isDailyCleanup) {
     try {
       const configured = Number(await getSetting(env, KEY_HEARTBEATS_RETENTION));
@@ -430,6 +433,7 @@ export async function runDueMonitors(
       await env.DB.prepare("DELETE FROM heartbeats WHERE created_at < ?")
         .bind(now - retentionDays * 24 * 3600 * 1000)
         .run();
+      await setSetting(env, "last_heartbeats_cleanup_at", String(now));
     } catch { /* 清理失败时忽略 */ }
   }
 

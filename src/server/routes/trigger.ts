@@ -3,7 +3,6 @@ import { Hono } from "hono";
 import { sha256Hex } from "../crypto";
 import { runDueJobs, type WaitUntilHost } from "../scheduler";
 import { runDueMonitors } from "../monitor";
-import { KEY_SCHEDULER_HEARTBEAT, setSetting } from "../settings";
 import type { ApiTokenRow, Env } from "../types";
 
 /** 外部触发令牌校验：Bearer 令牌 → SHA-256 哈希查库，命中后更新 last_used_at。
@@ -23,7 +22,11 @@ export const requireApiToken = createMiddleware<{ Bindings: Env }>(async (c, nex
     .bind(await sha256Hex(token))
     .first<ApiTokenRow>();
   if (!row) return c.json({ ok: false, error: "API Token 无效或已撤销" }, 401);
-  await c.env.DB.prepare("UPDATE api_tokens SET last_used_at=? WHERE id=?").bind(Date.now(), row.id).run();
+  // 节流写入 last_used_at：距上次记录超过 5 分钟才写库，节约 D1 写入配额
+  const now = Date.now();
+  if (!row.last_used_at || now - row.last_used_at > 5 * 60_000) {
+    await c.env.DB.prepare("UPDATE api_tokens SET last_used_at=? WHERE id=?").bind(now, row.id).run();
+  }
   await next();
 });
 
@@ -31,7 +34,7 @@ const triggerRoutes = new Hono<{ Bindings: Env }>();
 triggerRoutes.use("*", requireApiToken);
 
 // 跑一轮完整调度，与 scheduled 处理器同构：到期任务 + 到期监控探测，调度器
-// 心跳随 runDueJobs 开头自动写入（外部驱动时仪表盘判活依然成立）。两函数都
+// 心跳随 runDueJobs 内部按 10 分钟整点写入（节约 D1 写入配额）。两函数都
 // 绝不外抛；与平台 cron 并存也安全——任务认领靠乐观锁，重复唤醒只会空跑。
 triggerRoutes.post("/", async (c) => {
   // 第二层限流：令牌校验通过后的全局配额，保护调度本体不被高频触发
@@ -52,9 +55,6 @@ triggerRoutes.post("/", async (c) => {
     runDueJobs(c.env, now, ctx),
     runDueMonitors(c.env, now, ctx),
   ]);
-  try {
-    await setSetting(c.env, KEY_SCHEDULER_HEARTBEAT, String(now));
-  } catch { /* 忽略 */ }
   return c.json({
     ok: true,
     data: { triggered: jobs.triggered, failed: jobs.failed, probed: monitors.probed, down: monitors.down },

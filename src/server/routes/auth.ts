@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { createSessionToken, verifyPassword, verifyPasswordHash, verifySessionToken } from "../crypto";
+import { createSessionToken, getEncryptionKey, verifyPassword, verifyPasswordHash, verifySessionToken } from "../crypto";
 import { getAuthState } from "../settings";
 import type { Env } from "../types";
 
@@ -36,7 +36,7 @@ authRoutes.post("/login", async (c) => {
     }
     return c.json({ ok: false, error: "密码错误" }, 401);
   }
-  const secret = c.env.TOKEN_ENC_KEY || c.env.ADMIN_PASSWORD;
+  const secret = getEncryptionKey(c.env);
   const token = await createSessionToken(secret, state.epoch);
   setCookie(c, "session", token, {
     httpOnly: true,
@@ -56,7 +56,12 @@ authRoutes.post("/logout", (c) => {
 authRoutes.get("/me", async (c) => {
   const token = getCookie(c, "session");
   const { epoch } = await getAuthState(c.env);
-  const secret = c.env.TOKEN_ENC_KEY || c.env.ADMIN_PASSWORD;
+  let secret: string;
+  try {
+    secret = getEncryptionKey(c.env);
+  } catch {
+    return c.json({ ok: false, error: "系统秘钥未配置" }, 500);
+  }
   if (token && (await verifySessionToken(token, secret, epoch))) {
     return c.json({ ok: true, data: null });
   }

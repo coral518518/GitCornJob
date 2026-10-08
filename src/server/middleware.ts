@@ -1,6 +1,6 @@
 import { createMiddleware } from "hono/factory";
 import { getCookie } from "hono/cookie";
-import { verifySessionToken } from "./crypto";
+import { getEncryptionKey, verifySessionToken } from "./crypto";
 import { getAuthState } from "./settings";
 import type { Env } from "./types";
 
@@ -9,7 +9,12 @@ import type { Env } from "./types";
 export const requireAuth = createMiddleware<{ Bindings: Env }>(async (c, next) => {
   const token = getCookie(c, "session");
   const { epoch } = await getAuthState(c.env);
-  const secret = c.env.TOKEN_ENC_KEY || c.env.ADMIN_PASSWORD;
+  let secret: string;
+  try {
+    secret = getEncryptionKey(c.env);
+  } catch {
+    return c.json({ ok: false, error: "系统秘钥未配置" }, 500);
+  }
   if (!token || !(await verifySessionToken(token, secret, epoch))) {
     return c.json({ ok: false, error: "未登录" }, 401);
   }

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { encryptText, decryptText, tokenFingerprint } from "../crypto";
+import { encryptText, decryptText, getEncryptionKey, tokenFingerprint } from "../crypto";
 import { verifyGithubToken } from "../github";
 import type { AccountRow, Env } from "../types";
 
@@ -41,7 +41,8 @@ accountRoutes.post("/", async (c) => {
     last_verified_at = Date.now();
   }
 
-  const token_encrypted = await encryptText(token, c.env.TOKEN_ENC_KEY);
+  const encKey = getEncryptionKey(c.env);
+  const token_encrypted = await encryptText(token, encKey);
   const now = Date.now();
   const r = await c.env.DB.prepare(
     "INSERT INTO accounts (name, github_login, token_encrypted, token_fingerprint, status, last_verified_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -55,7 +56,8 @@ accountRoutes.post("/", async (c) => {
 accountRoutes.post("/:id/verify", async (c) => {
   const account = await c.env.DB.prepare("SELECT * FROM accounts WHERE id=?").bind(Number(c.req.param("id"))).first<AccountRow>();
   if (!account) return c.json({ ok: false, error: "账号不存在" }, 404);
-  const token = await decryptText(account.token_encrypted, c.env.TOKEN_ENC_KEY).catch(() => "");
+  const encKey = getEncryptionKey(c.env);
+  const token = await decryptText(account.token_encrypted, encKey).catch(() => "");
   if (!token) return c.json({ ok: false, error: "token 解密失败" }, 500);
   const v = await verifyGithubToken(token);
   const status = v.ok ? "ok" : "invalid";
@@ -82,7 +84,8 @@ accountRoutes.put("/:id", async (c) => {
 
   const now = Date.now();
   if (newToken) {
-    const token_encrypted = await encryptText(newToken, c.env.TOKEN_ENC_KEY);
+    const encKey = getEncryptionKey(c.env);
+    const token_encrypted = await encryptText(newToken, encKey);
     await c.env.DB.prepare(
       "UPDATE accounts SET name=?, token_encrypted=?, token_fingerprint=?, updated_at=? WHERE id=?",
     )

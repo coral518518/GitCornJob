@@ -17,12 +17,22 @@ function b64decode(s: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+export function getEncryptionKey(env: { TOKEN_ENC_KEY?: string; ADMIN_PASSWORD?: string }): string {
+  const key = env.TOKEN_ENC_KEY?.trim() || env.ADMIN_PASSWORD?.trim();
+  if (!key) {
+    throw new Error("缺少加解密密钥：请配置 TOKEN_ENC_KEY 或 ADMIN_PASSWORD");
+  }
+  return key;
+}
+
 async function aesKey(secret: string): Promise<CryptoKey> {
+  if (!secret) throw new Error("秘钥不能为空");
   const digest = await crypto.subtle.digest("SHA-256", te.encode(secret));
   return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 export async function encryptText(plain: string, secret: string): Promise<string> {
+  if (!secret) throw new Error("加密秘钥不能为空");
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(secret), te.encode(plain));
   const out = new Uint8Array(12 + ct.byteLength);
@@ -32,6 +42,7 @@ export async function encryptText(plain: string, secret: string): Promise<string
 }
 
 export async function decryptText(enc: string, secret: string): Promise<string> {
+  if (!secret) throw new Error("解密秘钥不能为空");
   const raw = b64decode(enc);
   const pt = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: raw.slice(0, 12) },
@@ -53,7 +64,7 @@ async function hmacKey(secret: string, domain: string): Promise<CryptoKey> {
 export const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 
 // 令牌格式 epoch.exp.sig。epoch 来自 settings.session_epoch，改密时 +1——
-// 校验时 epoch 不匹配即拒绝，从而让改密前签发的所有旧会话整体失效。
+// 签名涵盖 epoch.exp，任何对 epoch 的篡改都会导致 HMAC 校验失败。
 // 兼容两段式旧格式（等价于 epoch=0），部署本次改动后存量会话不必集体重登。
 export async function createSessionToken(
   secret: string,
@@ -62,7 +73,8 @@ export async function createSessionToken(
 ): Promise<string> {
   const exp = now + SESSION_TTL_MS;
   const key = await hmacKey(secret, "session");
-  const sig = await crypto.subtle.sign("HMAC", key, te.encode(String(exp)));
+  const dataToSign = `${epoch}.${exp}`;
+  const sig = await crypto.subtle.sign("HMAC", key, te.encode(dataToSign));
   return `${epoch}.${exp}.${b64encode(sig).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
 }
 
@@ -88,11 +100,13 @@ export async function verifySessionToken(
   const key = await hmacKey(secret, "session");
   let sig: Uint8Array;
   try {
-    sig = b64decode(sigPart.replace(/-/g, "+").replace(/_/g, "/"));
+    const padded = sigPart.padEnd(sigPart.length + (4 - (sigPart.length % 4)) % 4, "=");
+    sig = b64decode(padded.replace(/-/g, "+").replace(/_/g, "/"));
   } catch {
     return false;
   }
-  return crypto.subtle.verify("HMAC", key, sig as BufferSource, te.encode(expStr));
+  const dataToVerify = parts.length === 3 ? `${epochStr}.${expStr}` : expStr;
+  return crypto.subtle.verify("HMAC", key, sig as BufferSource, te.encode(dataToVerify));
 }
 
 export async function verifyPassword(input: string, actual: string): Promise<boolean> {
@@ -115,7 +129,8 @@ function b64urlEncode(buf: Uint8Array): string {
 }
 
 function b64urlDecode(s: string): Uint8Array<ArrayBuffer> {
-  return b64decode(s.replace(/-/g, "+").replace(/_/g, "/"));
+  const padded = s.padEnd(s.length + (4 - (s.length % 4)) % 4, "=");
+  return b64decode(padded.replace(/-/g, "+").replace(/_/g, "/"));
 }
 
 async function pbkdf2(pw: string, salt: BufferSource, iterations: number): Promise<Uint8Array> {

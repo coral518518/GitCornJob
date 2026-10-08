@@ -1,5 +1,5 @@
 import { computeNextRun, validateSchedule } from "./schedule";
-import { decryptText } from "./crypto";
+import { decryptText, getEncryptionKey } from "./crypto";
 import { triggerGithub } from "./github";
 import { notifyAccountInvalid, notifyJobAutoPaused, notifyJobFailed, sendNotify, getChannels, type ChannelRow, type NotifyPayload } from "./notify";
 import { pollGhRuns } from "./runtrack";
@@ -31,9 +31,10 @@ async function recordRun(env: Env, jobId: number, source: TriggerSource, status:
 export async function dispatchJob(env: Env, job: JobRow, account: AccountRow, source: TriggerSource): Promise<TriggerOutcome> {
   let token: string;
   try {
-    token = await decryptText(account.token_encrypted, env.TOKEN_ENC_KEY);
+    const encKey = getEncryptionKey(env);
+    token = await decryptText(account.token_encrypted, encKey);
   } catch {
-    const msg = "token 解密失败（TOKEN_ENC_KEY 是否变更？）";
+    const msg = "token 解密失败（密钥配置是否变更？）";
     await recordRun(env, job.id, source, "failed", 0, msg);
     return { ok: false, httpStatus: 0, error: msg };
   }
@@ -99,9 +100,9 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
   // PAT 失效按账号去重：同一失效账号的多个任务在同轮失败只推一条
   const invalidNotified = new Set<number>();
 
-  // 免费层控制单轮批次（上限 25），为 GitHub API 与监控探测预留 subrequest 预算
+  // 免费层控制单轮批次（上限 15），与轮询(15)及探测(10)共同控制单次唤醒 subrequest ≤ 50
   const due = await env.DB.prepare(
-    "SELECT * FROM jobs WHERE enabled=1 AND next_run_at<=? ORDER BY next_run_at ASC LIMIT 25",
+    "SELECT * FROM jobs WHERE enabled=1 AND next_run_at<=? ORDER BY next_run_at ASC LIMIT 15",
   )
     .bind(now)
     .all<JobRow>();
@@ -226,9 +227,11 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
   if (ctx) ctx.waitUntil(tail);
   else await tail;
 
-  // 自动清理：降频为每天执行一次（UTC 03:00），避免每分钟无效 DELETE 消耗 D1 写入配额。
-  // 清理失败不影响本轮触发结果，下个周期会再试。
-  const isDailyCleanup = new Date(now).getUTCHours() === 3 && new Date(now).getUTCMinutes() === 0;
+  // 自动清理：每日执行一次（距上次清理超过 24 小时，且处于 UTC 03:00 窗口期或已严重超时），
+  // 记录上次清理时间，防止整点分钟抖动导致整天漏跑。
+  const lastCleanupStr = await getSetting(env, "last_runs_cleanup_at").catch(() => null);
+  const lastCleanup = Number(lastCleanupStr) || 0;
+  const isDailyCleanup = now - lastCleanup >= 24 * 3600 * 1000 && (new Date(now).getUTCHours() >= 3 || now - lastCleanup >= 28 * 3600 * 1000);
   if (isDailyCleanup) {
     try {
       const configured = Number(await getSetting(env, KEY_RUNS_RETENTION));
@@ -238,6 +241,7 @@ export async function runDueJobs(env: Env, now: number = Date.now(), ctx?: WaitU
       await env.DB.prepare("DELETE FROM runs WHERE triggered_at < ?")
         .bind(now - retentionDays * 24 * 3600 * 1000)
         .run();
+      await setSetting(env, "last_runs_cleanup_at", String(now));
     } catch { /* 清理失败时忽略 */ }
   }
   return { triggered, failed };

@@ -40,8 +40,15 @@ export async function triggerGithub(
   try {
     if (cfg.triggerType === "workflow_dispatch") {
       if (!cfg.workflowId) return { ok: false, httpStatus: 0, error: "缺少 workflow 文件名" };
-      url = `https://api.github.com/repos/${cfg.repo}/actions/workflows/${cfg.workflowId}/dispatches`;
-      body = { ref: cfg.ref || "main", inputs: parsePayloadJson(cfg.inputsJson) };
+      const rawId = cfg.workflowId.trim();
+      const cleanId = rawId.replace(/^\.github\/workflows\//, "");
+      url = `https://api.github.com/repos/${cfg.repo}/actions/workflows/${encodeURIComponent(cleanId)}/dispatches`;
+      const rawInputs = parsePayloadJson(cfg.inputsJson);
+      const stringInputs: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rawInputs)) {
+        stringInputs[k] = typeof v === "string" ? v : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v);
+      }
+      body = { ref: cfg.ref || "main", inputs: stringInputs };
     } else {
       url = `https://api.github.com/repos/${cfg.repo}/dispatches`;
       body = { event_type: cfg.eventType || "cron", client_payload: parsePayloadJson(cfg.inputsJson) };

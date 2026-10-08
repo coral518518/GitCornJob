@@ -57,7 +57,11 @@ class GatewayWorker extends PrismWorker {
       return true;
     }
     // 静态资源与图标无需重复鉴权
-    if (url.pathname.startsWith("/assets/") || url.pathname === "/favicon.ico") {
+    if (url.pathname.startsWith("/assets/") || url.pathname === "/favicon.ico" || url.pathname === "/favicon.svg") {
+      return true;
+    }
+    // 公开状态页免登录放行
+    if (url.pathname.startsWith("/status/") || url.pathname === "/status") {
       return true;
     }
     return super.isPublic(url, request);

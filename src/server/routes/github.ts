@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { decryptText } from "../crypto";
+import { decryptText, getEncryptionKey } from "../crypto";
 import type { AccountRow, Env } from "../types";
 
 const githubRoutes = new Hono<{ Bindings: Env }>();
@@ -31,9 +31,10 @@ githubRoutes.get("/workflows", async (c) => {
   if (!account) return c.json({ ok: false, error: "账号不存在" }, 404);
   let token: string;
   try {
-    token = await decryptText(account.token_encrypted, c.env.TOKEN_ENC_KEY);
+    const encKey = getEncryptionKey(c.env);
+    token = await decryptText(account.token_encrypted, encKey);
   } catch {
-    return c.json({ ok: false, error: "token 解密失败（TOKEN_ENC_KEY 是否变更？）" }, 500);
+    return c.json({ ok: false, error: "token 解密失败（密钥配置是否变更？）" }, 500);
   }
 
   const res = await fetch(

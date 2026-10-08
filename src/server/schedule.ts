@@ -53,7 +53,7 @@ export function computeNextRun(rule: ScheduleRule, plannedAt: number, rand: () =
   if (rule.type === "cron") return nextCronTime(rule.expr, plannedAt, tz);
   const ms = UNIT_MS[rule.unit];
   if (rule.mode === "fixed") return plannedAt + rule.value * ms;
-  return plannedAt + (rule.min + rand() * (rule.max - rule.min)) * ms;
+  return Math.round(plannedAt + (rule.min + rand() * (rule.max - rule.min)) * ms);
 }
 
 const UNIT_NAME: Record<Unit, string> = { m: "分钟", h: "小时", d: "天" };
