@@ -86,7 +86,7 @@ statusRoutes.get("/:slug", async (c) => {
   )).filter((m): m is NonNullable<typeof m> => m !== null);
 
   const down = monitors.filter((m) => m.status === "down").length;
-  c.header("Cache-Control", "public, max-age=30, s-maxage=30");
+  c.header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=30");
   const res = c.json({
     ok: true,
     data: { title: cfg.title, overall: down > 0 ? "down" : "up", monitors },

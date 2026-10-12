@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { get } from "../api";
 import PageHeader from "../components/PageHeader";
@@ -74,27 +74,36 @@ export default function Dashboard() {
   const [jobsError, setJobsError] = useState(false);
   const alive = useAlive();
 
+  const tickCount = useRef(0);
+
   // 加载失败不能落回 null——null 被渲染成骨架屏，网络错误会表现为"永远在加载"。
   // 错误是独立状态，骨架屏只属于"还没拿到结果"。
-  function load() {
+  function load(full = true) {
     setStatsError(false);
     setRunsError(false);
-    setJobsError(false);
+    if (full) setJobsError(false);
     get<Stats>("/api/stats")
       .then(s => { if (alive.current) setStats(s); })
       .catch(() => { if (alive.current) setStatsError(true); });
     get<{ rows: Run[] }>("/api/runs?page=1")
       .then(d => { if (alive.current) setRuns(d.rows.slice(0, 10)); })
       .catch(() => { if (alive.current) setRunsError(true); });
-    get<Job[]>("/api/jobs")
-      .then(d => { if (alive.current) setJobs(d); })
-      .catch(() => { if (alive.current) setJobsError(true); });
+    if (full) {
+      get<Job[]>("/api/jobs")
+        .then(d => { if (alive.current) setJobs(d); })
+        .catch(() => { if (alive.current) setJobsError(true); });
+    }
   }
 
-  useEffect(load, []);
+  const handleRetry = () => { load(true); };
 
-  // 自动刷新：统计/最近运行/即将运行每 60 秒重拉（节约免费额度），页面不可见时暂停
-  useAutoRefresh(load, 60_000);
+  useEffect(() => { load(true); }, []);
+
+  // 自动刷新：平时仅轮询动态变化的统计与最近运行；每 5 分钟同步一次任务列表更新即将运行，页面不可见或空闲时暂停
+  useAutoRefresh(() => {
+    tickCount.current = (tickCount.current + 1) % 5;
+    load(tickCount.current === 0);
+  }, 60_000);
 
   // 只看已启用的任务，按下次触发时间升序；filter 已产生新数组，sort 不会动 state
   const upcoming = jobs === null
@@ -111,7 +120,7 @@ export default function Dashboard() {
         {statsError ? (
           <div className="col-span-full flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger">
             <span>统计数据加载失败。</span>
-            <Button size="sm" variant="secondary" onClick={load}
+            <Button size="sm" variant="secondary" onClick={handleRetry}
               icon={<RefreshCw className="size-3.5" />}>重试</Button>
           </div>
         ) : stats === null
@@ -186,7 +195,7 @@ export default function Dashboard() {
           {runsError ? (
             <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm text-fg-muted">
               <span>运行记录加载失败。</span>
-              <Button size="sm" variant="secondary" onClick={load}
+              <Button size="sm" variant="secondary" onClick={handleRetry}
                 icon={<RefreshCw className="size-3.5" />}>重试</Button>
             </Card>
           ) : runs === null ? (
@@ -259,7 +268,7 @@ export default function Dashboard() {
           {jobsError ? (
             <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm text-fg-muted">
               <span>任务数据加载失败。</span>
-              <Button size="sm" variant="secondary" onClick={load}
+              <Button size="sm" variant="secondary" onClick={handleRetry}
                 icon={<RefreshCw className="size-3.5" />}>重试</Button>
             </Card>
           ) : upcoming === null ? (
