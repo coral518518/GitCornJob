@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from "react";
+import { errText, post } from "../../api";
 import type { Channel, Schedule } from "../../types";
 import { CHANNEL_TYPE_LABEL } from "../../types";
 import { Badge, Button, Checkbox, Drawer, Field, Input, Segmented, Switch, Textarea } from "../../ui";
 import { EMPTY_SCHEDULE, LOCAL_TZ } from "../Jobs/schedule";
 import ScheduleEditor from "../Jobs/ScheduleEditor";
-import { Sparkles, Send, Eye, Code } from "../../ui/icons";
+import { Sparkles, Send, Eye, Code, Globe, CircleCheck, CircleAlert } from "../../ui/icons";
 
 export type EmailJobFormData = {
   id?: number;
@@ -19,6 +20,9 @@ export type EmailJobFormData = {
   notify: number;
   channelIds: number[] | null;
   timezone: string;
+  tg_enabled: boolean;
+  tg_channels: string;
+  tg_keywords: string;
 };
 
 export const EMPTY_EMAIL_FORM: EmailJobFormData = {
@@ -33,15 +37,19 @@ export const EMPTY_EMAIL_FORM: EmailJobFormData = {
   notify: 0,
   channelIds: null,
   timezone: LOCAL_TZ,
+  tg_enabled: false,
+  tg_channels: "",
+  tg_keywords: "",
 };
 
-type Key = "name" | "to_emails" | "subject" | "content";
+type Key = "name" | "to_emails" | "subject" | "content" | "tg_channels";
 
 const ALL_TOUCHED: Record<Key, boolean> = {
   name: true,
   to_emails: true,
   subject: true,
   content: true,
+  tg_channels: true,
 };
 
 function validate(f: EmailJobFormData): Record<Key, string | null> {
@@ -58,11 +66,14 @@ function validate(f: EmailJobFormData): Record<Key, string | null> {
     toErr = "存在格式不正确的收件人邮箱";
   }
 
+  const tgErr = f.tg_enabled && !f.tg_channels.trim() ? "请填写要监控的 Telegram 频道" : null;
+
   return {
     name: f.name.trim() ? null : "任务名不能为空",
     to_emails: toErr,
     subject: f.subject.trim() ? null : "邮件标题不能为空",
     content: f.content.trim() ? null : "邮件正文不能为空",
+    tg_channels: tgErr,
   };
 }
 
@@ -83,6 +94,12 @@ const TEMPLATE_VARS = [
   { label: "{{year}}", tip: "四位年份" },
   { label: "{{month}}", tip: "两位月份" },
   { label: "{{day}}", tip: "两位日" },
+];
+
+const TG_VARS = [
+  { label: "{{tg_messages}}", tip: "Telegram 消息列表卡片（自动排版）" },
+  { label: "{{tg_count}}", tip: "检测到的新消息数量" },
+  { label: "{{tg_channels}}", tip: "当前监控的频道名列表" },
 ];
 
 type Props = {
@@ -114,6 +131,59 @@ export default function EmailJobForm({
   const [schedErr, setSchedErr] = useState<string | null>(null);
   const [showMoreRecipients, setShowMoreRecipients] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
+
+  const [testingTg, setTestingTg] = useState(false);
+  const [tgTestResult, setTgTestResult] = useState<{
+    ok: boolean;
+    msg: string;
+    previews?: Array<{ channel: string; postId: number; text?: string; link: string }>;
+  } | null>(null);
+
+  async function handleTestTg() {
+    if (!form.tg_channels.trim()) return;
+    setTestingTg(true);
+    setTgTestResult(null);
+    try {
+      const res = await post<{
+        channels: string[];
+        totalPosts: number;
+        results: Array<{
+          channel: string;
+          latestId: number;
+          posts: Array<{ channel: string; postId: number; text?: string; link: string }>;
+          error?: string;
+        }>;
+      }>("/api/email-jobs/test-tg", {
+        channels: form.tg_channels,
+        keywords: form.tg_keywords || undefined,
+      });
+
+      const errCount = res.results.filter((r) => r.error).length;
+      const allPosts = res.results.flatMap((r) => r.posts);
+
+      if (errCount === res.results.length) {
+        setTgTestResult({
+          ok: false,
+          msg: `探测失败：${res.results.map((r) => `@${r.channel}: ${r.error}`).join("; ")}`,
+        });
+      } else {
+        setTgTestResult({
+          ok: true,
+          msg: `成功探测 ${res.channels.length} 个频道，抓取到 ${res.totalPosts} 条可用消息${
+            form.tg_keywords ? "（已应用关键词过滤）" : ""
+          }`,
+          previews: allPosts.slice(0, 5),
+        });
+      }
+    } catch (e) {
+      setTgTestResult({
+        ok: false,
+        msg: `探测异常：${errText(e)}`,
+      });
+    } finally {
+      setTestingTg(false);
+    }
+  }
 
   const errors = validate(form);
   const blocked = Object.values(errors).some(Boolean) || !!schedErr;
@@ -159,7 +229,7 @@ export default function EmailJobForm({
                 id={id}
                 aria-describedby={describedBy}
                 invalid={!!err("name")}
-                placeholder="例如：每日打卡提醒 / 每周工作简报"
+                placeholder="例如：TG 频道更新推送 / 每日打卡提醒"
                 value={form.name}
                 onBlur={touch("name")}
                 onChange={(e) => set({ name: e.target.value })}
@@ -277,6 +347,118 @@ export default function EmailJobForm({
           </div>
         </Group>
 
+        <Group title="Telegram 频道监控 (可选)">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2.5">
+              <div>
+                <div className="text-sm font-medium text-fg">关联 Telegram 频道监控</div>
+                <div className="text-xs text-fg-subtle">
+                  满足条件才发信：调度器运行时若检测到新消息才发信，无新消息则自动跳过
+                </div>
+              </div>
+              <Switch
+                checked={form.tg_enabled}
+                label="关联 Telegram 频道监控"
+                onChange={(v) => {
+                  const patch: Partial<EmailJobFormData> = { tg_enabled: v };
+                  if (v && !form.subject.trim()) {
+                    patch.subject = "【频道更新】{{tg_channels}} 有 {{tg_count}} 条新消息";
+                  }
+                  if (v && !form.content.trim()) {
+                    patch.content = "{{tg_messages}}";
+                  }
+                  set(patch);
+                }}
+              />
+            </div>
+
+            {form.tg_enabled && (
+              <div className="space-y-3 rounded-lg border border-border bg-surface p-3.5">
+                <Field
+                  label="监控频道列表 (Channels)"
+                  hint="支持多个频道（每行一个或逗号分隔）。例如：durov、@telegram 或 https://t.me/example"
+                  error={err("tg_channels")}
+                >
+                  {({ id }) => (
+                    <Textarea
+                      id={id}
+                      rows={2}
+                      placeholder="durov, @telegram&#10;https://t.me/example_channel"
+                      value={form.tg_channels}
+                      onBlur={touch("tg_channels")}
+                      onChange={(e) => set({ tg_channels: e.target.value })}
+                    />
+                  )}
+                </Field>
+
+                <Field
+                  label="关键词过滤 (Keywords - 可选)"
+                  hint="选填。多个关键词以逗号或换行分隔；仅抓取包含任一关键词的消息，留空则不过滤"
+                >
+                  {({ id }) => (
+                    <Input
+                      id={id}
+                      placeholder="优惠, 折扣, 抽奖, giveaway"
+                      value={form.tg_keywords}
+                      onChange={(e) => set({ tg_keywords: e.target.value })}
+                    />
+                  )}
+                </Field>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-2.5">
+                  <span className="text-xs text-fg-subtle">
+                    时间窗口机制：检索频道过去 1 小时内发布的新消息，初次启动绝不拉取远古旧历史；无新消息则安全跳过。
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    loading={testingTg}
+                    disabled={!form.tg_channels.trim()}
+                    onClick={() => void handleTestTg()}
+                  >
+                    测试探测频道
+                  </Button>
+                </div>
+
+                {tgTestResult && (
+                  <div
+                    className={`rounded-md border p-2.5 text-xs ${
+                      tgTestResult.ok
+                        ? "border-success/30 bg-success/5 text-success"
+                        : "border-danger/30 bg-danger/5 text-danger"
+                    }`}
+                  >
+                    <div className="font-semibold mb-1 flex items-center gap-1.5">
+                      {tgTestResult.ok ? (
+                        <CircleCheck className="size-3.5 shrink-0" />
+                      ) : (
+                        <CircleAlert className="size-3.5 shrink-0" />
+                      )}
+                      <span>{tgTestResult.msg}</span>
+                    </div>
+                    {tgTestResult.previews && tgTestResult.previews.length > 0 && (
+                      <div className="mt-1.5 space-y-1 max-h-36 overflow-y-auto">
+                        {tgTestResult.previews.map((p, idx) => (
+                          <div
+                            key={idx}
+                            className="rounded border border-border bg-surface px-2 py-1 text-[11px] text-fg"
+                          >
+                            <span className="font-semibold text-primary">@{p.channel}</span> #{p.postId}:{" "}
+                            <span className="text-fg-muted">
+                              {p.text ? (p.text.length > 60 ? `${p.text.slice(0, 60)}…` : p.text) : p.link}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </Group>
+
         <Group title="邮件内容">
           <Field label="邮件标题 (Subject)" error={err("subject")}>
             {({ id, describedBy }) => (
@@ -305,6 +487,25 @@ export default function EmailJobForm({
                       {v.label}
                     </button>
                   ))}
+                  {form.tg_enabled && (
+                    <>
+                      <span className="text-border">|</span>
+                      <span className="inline-flex items-center gap-1 font-medium text-primary">
+                        <Globe className="size-3" /> TG变量：
+                      </span>
+                      {TG_VARS.slice(1).map((v) => (
+                        <button
+                          key={v.label}
+                          type="button"
+                          title={v.tip}
+                          onClick={() => insertVarToSubject(v.label)}
+                          className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-mono text-primary transition-colors hover:bg-primary/20"
+                        >
+                          {v.label}
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -367,7 +568,9 @@ export default function EmailJobForm({
                     rows={8}
                     className="font-mono text-xs leading-relaxed"
                     placeholder={
-                      form.content_type === "markdown"
+                      form.tg_enabled
+                        ? "在正文中插入 {{tg_messages}} 占位符，发信时将自动替换为新消息卡片列表。\n若未填写 {{tg_messages}}，系统将默认在文末附加新消息列表。"
+                        : form.content_type === "markdown"
                         ? "支持 Markdown 语法与动态插值变量：\n# 每日打卡\n今天是 **{{datetime}}**，请按时完成任务！"
                         : form.content_type === "html"
                         ? "<h3>您好！</h3><p>系统于 {{datetime}} 自动生成本邮件。</p>"
@@ -393,6 +596,25 @@ export default function EmailJobForm({
                       {v.label}
                     </button>
                   ))}
+                  {form.tg_enabled && (
+                    <>
+                      <span className="text-border">|</span>
+                      <span className="inline-flex items-center gap-1 font-medium text-primary">
+                        <Globe className="size-3" /> TG变量：
+                      </span>
+                      {TG_VARS.map((v) => (
+                        <button
+                          key={v.label}
+                          type="button"
+                          title={v.tip}
+                          onClick={() => insertVarToContent(v.label)}
+                          className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-mono text-primary transition-colors hover:bg-primary/20"
+                        >
+                          {v.label}
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               </>
             )}

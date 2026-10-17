@@ -140,6 +140,10 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   notify_channel_ids TEXT,
   fail_streak INTEGER NOT NULL DEFAULT 0,
   timezone TEXT,
+  -- 可选 Telegram 频道监控（多频道逗号/换行分隔、关键词过滤、最近 post_id 状态 JSON）
+  tg_channels TEXT,
+  tg_keywords TEXT,
+  tg_state_json TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -172,7 +176,8 @@ INSERT OR IGNORE INTO schema_migrations (id, name, applied_at) VALUES
   (3, 'heartbeat-monitors', 1700000000000),
   (4, 'monitor-pause-window', 1700000000000),
   (5, 'api-tokens', 1700000000000),
-  (6, 'email-jobs-and-logs', 1700000000000);
+  (6, 'email-jobs-and-logs', 1700000000000),
+  (7, 'email-jobs-tg-monitor', 1700000000000);
 
 -- ============================================================
 -- 字段与维护说明

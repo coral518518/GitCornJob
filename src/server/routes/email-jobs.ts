@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { computeNextRun, isValidTimezone, validateSchedule, type ScheduleRule } from "../schedule";
 import { getResendConfig, maskApiKey, parseApiKeys, parseEmailList, saveResendConfig, sendResendEmail } from "../email";
+import { fetchChannelPosts, parseTgChannels, parseTgKeywords, type TgPost } from "../tg-monitor";
 import { triggerEmailJobOnce } from "../email-scheduler";
 import { assertChannelsExist } from "./jobs";
 import type { EmailJobRow, Env } from "../types";
@@ -117,6 +118,35 @@ emailJobRoutes.post("/test", async (c) => {
 });
 
 // -------------------------------------------------------------
+// Telegram 频道在线抓取探测接口
+// -------------------------------------------------------------
+
+emailJobRoutes.post("/test-tg", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as never);
+  const channelsInput = typeof body.channels === "string" ? body.channels.trim() : "";
+  const channels = parseTgChannels(channelsInput);
+  if (channels.length === 0) {
+    return c.json({ ok: false, error: "请填写至少一个有效的 Telegram 频道用户名或公开链接" }, 400);
+  }
+
+  const keywords = typeof body.keywords === "string" ? parseTgKeywords(body.keywords) : undefined;
+  const results: Array<{ channel: string; latestId: number; posts: TgPost[]; error?: string }> = [];
+
+  for (const ch of channels) {
+    const res = await fetchChannelPosts(ch, 0, keywords);
+    results.push({
+      channel: ch,
+      latestId: res.latestId,
+      posts: res.newPosts.slice(-5), // 预览前 5 条
+      error: res.error,
+    });
+  }
+
+  const totalPosts = results.reduce((sum, r) => sum + r.posts.length, 0);
+  return c.json({ ok: true, data: { channels, results, totalPosts } });
+});
+
+// -------------------------------------------------------------
 // 邮件任务 CRUD 接口
 // -------------------------------------------------------------
 
@@ -131,6 +161,8 @@ type EmailJobInput = {
   notify: number;
   notify_channel_ids: string | null;
   timezone: string | null;
+  tg_channels: string | null;
+  tg_keywords: string | null;
 };
 
 function validateEmailJobBody(body: Record<string, unknown>): {
@@ -178,6 +210,18 @@ function validateEmailJobBody(body: Record<string, unknown>): {
     if (!isValidTimezone(timezone)) return { ok: false, error: "时区名称无效（应为 IANA 时区，如 Asia/Shanghai）" };
   }
 
+  let tg_channels: string | null = null;
+  if (typeof body.tg_channels === "string" && body.tg_channels.trim()) {
+    const chs = parseTgChannels(body.tg_channels);
+    tg_channels = chs.length > 0 ? chs.join(", ") : null;
+  }
+
+  let tg_keywords: string | null = null;
+  if (typeof body.tg_keywords === "string" && body.tg_keywords.trim()) {
+    const kws = parseTgKeywords(body.tg_keywords);
+    tg_keywords = kws.length > 0 ? kws.join(", ") : null;
+  }
+
   return {
     ok: true,
     data: {
@@ -191,6 +235,8 @@ function validateEmailJobBody(body: Record<string, unknown>): {
       notify,
       notify_channel_ids,
       timezone,
+      tg_channels,
+      tg_keywords,
     },
     schedule: sv.rule,
     enabled,
@@ -223,8 +269,9 @@ emailJobRoutes.post("/", async (c) => {
   const r = await c.env.DB.prepare(
     `INSERT INTO email_jobs (
       name, to_emails, cc_emails, bcc_emails, subject, content, content_type,
-      schedule_json, notify, notify_channel_ids, timezone, enabled, next_run_at, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      schedule_json, notify, notify_channel_ids, timezone, tg_channels, tg_keywords, tg_state_json,
+      enabled, next_run_at, created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   )
     .bind(
       v.data.name,
@@ -238,6 +285,9 @@ emailJobRoutes.post("/", async (c) => {
       v.data.notify,
       v.data.notify_channel_ids,
       v.data.timezone,
+      v.data.tg_channels,
+      v.data.tg_keywords,
+      null,
       v.enabled,
       next_run_at,
       now,
@@ -284,7 +334,8 @@ emailJobRoutes.put("/:id", async (c) => {
   await c.env.DB.prepare(
     `UPDATE email_jobs SET
       name=?, to_emails=?, cc_emails=?, bcc_emails=?, subject=?, content=?, content_type=?,
-      schedule_json=?, notify=?, notify_channel_ids=?, timezone=?, enabled=?, next_run_at=?, updated_at=?
+      schedule_json=?, notify=?, notify_channel_ids=?, timezone=?, tg_channels=?, tg_keywords=?,
+      enabled=?, next_run_at=?, updated_at=?
     WHERE id=?`
   )
     .bind(
@@ -299,6 +350,8 @@ emailJobRoutes.put("/:id", async (c) => {
       v.data.notify,
       v.data.notify_channel_ids,
       v.data.timezone,
+      v.data.tg_channels,
+      v.data.tg_keywords,
       v.enabled,
       next_run_at,
       now,

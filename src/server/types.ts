@@ -142,6 +142,9 @@ export type EmailJobRow = {
   notify_channel_ids: string | null;
   fail_streak: number;
   timezone: string | null;
+  tg_channels: string | null;
+  tg_keywords: string | null;
+  tg_state_json: string | null;
   created_at: number;
   updated_at: number;
 };

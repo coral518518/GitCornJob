@@ -87,6 +87,9 @@ export default function EmailJobs() {
       notify: job.notify,
       channelIds: job.notify_channel_ids ? JSON.parse(job.notify_channel_ids) : null,
       timezone: job.timezone || "Asia/Shanghai",
+      tg_enabled: !!(job.tg_channels && job.tg_channels.trim()),
+      tg_channels: job.tg_channels || "",
+      tg_keywords: job.tg_keywords || "",
     };
     setForm(f);
     setSnapshot(f);
@@ -115,15 +118,26 @@ export default function EmailJobs() {
   async function handleTrigger(job: EmailJob) {
     const ok = await confirm({
       title: "立即发送邮件",
-      description: `确定立即向「${job.to_emails}」发送一次「${job.name}」吗？`,
-      confirmText: "立即发送",
+      description: `确定立即向「${job.to_emails}」执行一次「${job.name}」吗？${
+        job.tg_channels ? "（已关联 Telegram 监控，有新消息时才发信）" : ""
+      }`,
+      confirmText: "立即执行",
     });
     if (!ok) return;
 
     setTriggeringId(job.id);
     try {
-      await post(`/api/email-jobs/${job.id}/trigger`);
-      toast(`「${job.name}」已成功触发发送！`, "ok");
+      const res = await post<{ ok: boolean; skipped?: boolean; skipReason?: string; postCount?: number }>(
+        `/api/email-jobs/${job.id}/trigger`
+      );
+      if (res.skipped) {
+        toast(`执行完成：${res.skipReason || "暂无新消息，跳过发信"}`, "ok");
+      } else {
+        toast(
+          `「${job.name}」已成功触发发送！${typeof res.postCount === "number" ? `包含 ${res.postCount} 条新消息` : ""}`,
+          "ok"
+        );
+      }
       await loadData();
     } catch (e) {
       toast(`发送失败：${errText(e)}`, "err");
@@ -166,6 +180,8 @@ export default function EmailJobs() {
         notify: form.notify,
         notify_channel_ids: form.channelIds,
         timezone: form.timezone,
+        tg_channels: form.tg_enabled && form.tg_channels.trim() ? form.tg_channels.trim() : null,
+        tg_keywords: form.tg_enabled && form.tg_keywords.trim() ? form.tg_keywords.trim() : null,
       };
 
       if (form.id) {

@@ -1,5 +1,6 @@
 import { computeNextRun, validateSchedule } from "./schedule";
 import { getResendConfig, interpolateTemplate, parseEmailList, sendResendEmail } from "./email";
+import { checkTgChannelsForJob, formatTgEmail, parseTgChannels } from "./tg-monitor";
 import { getChannels, notifyEmailJobAutoPaused, notifyEmailJobFailed, sendNotify, type ChannelRow, type NotifyPayload } from "./notify";
 import { DEFAULT_RUN_RETENTION_DAYS, KEY_RUNS_RETENTION, getAutoPauseThreshold, getSetting, setSetting } from "./settings";
 import type { EmailJobRow, Env } from "./types";
@@ -13,6 +14,9 @@ export type EmailDispatchOutcome = {
   resendId?: string;
   error?: string;
   latencyMs?: number;
+  skipped?: boolean;
+  skipReason?: string;
+  postCount?: number;
 };
 
 async function recordEmailLog(
@@ -68,9 +72,51 @@ export async function dispatchEmailJob(
   }
 
   const now = Date.now();
-  // 变量插值
-  const finalSubject = interpolateTemplate(job.subject, now, job.timezone);
-  const finalContent = interpolateTemplate(job.content, now, job.timezone);
+  let finalSubject = interpolateTemplate(job.subject, now, job.timezone);
+  let finalContent = interpolateTemplate(job.content, now, job.timezone);
+
+  // 可选 Telegram 频道监控
+  const tgChannels = parseTgChannels(job.tg_channels);
+  let tgCheckResult: Awaited<ReturnType<typeof checkTgChannelsForJob>> | null = null;
+
+  if (tgChannels.length > 0) {
+    tgCheckResult = await checkTgChannelsForJob(job);
+
+    // 若全部频道均抓取失败
+    if (
+      !tgCheckResult.hasNew &&
+      Object.keys(tgCheckResult.channelErrors).length > 0 &&
+      Object.keys(tgCheckResult.channelErrors).length >= tgChannels.length
+    ) {
+      const errMsg = Object.entries(tgCheckResult.channelErrors)
+        .map(([ch, err]) => `TG 频道 @${ch} 抓取失败: ${err}`)
+        .join("; ");
+      await recordEmailLog(env, job.id, source, "failed", null, job.to_emails, finalSubject, errMsg, 0);
+      return { ok: false, httpStatus: 502, error: errMsg, latencyMs: 0 };
+    }
+
+    // 满足条件才发邮件：若无新消息，跳过本次发信
+    if (!tgCheckResult.hasNew) {
+      return {
+        ok: true,
+        httpStatus: 200,
+        skipped: true,
+        skipReason: "Telegram 频道近 1 小时暂无新消息（未达到发信条件）",
+        latencyMs: 0,
+      };
+    }
+
+    // 格式化带有 Telegram 新消息的标题与正文
+    const tgFormatted = formatTgEmail(
+      tgCheckResult.posts,
+      tgChannels,
+      job.subject,
+      job.content,
+      job.content_type
+    );
+    finalSubject = interpolateTemplate(tgFormatted.subject, now, job.timezone);
+    finalContent = interpolateTemplate(tgFormatted.content, now, job.timezone);
+  }
 
   const ccList = parseEmailList(job.cc_emails);
   const bccList = parseEmailList(job.bcc_emails);
@@ -87,6 +133,13 @@ export async function dispatchEmailJob(
     bcc: bccList.length > 0 ? bccList : undefined,
     replyTo: config.replyTo,
   });
+
+  if (result.ok && tgCheckResult && tgCheckResult.hasNew) {
+    // 邮件发送成功后，记录审计信息
+    await env.DB.prepare("UPDATE email_jobs SET tg_state_json=? WHERE id=?")
+      .bind(JSON.stringify({ lastSentAt: now, postCount: tgCheckResult.posts.length }), job.id)
+      .run();
+  }
 
   await recordEmailLog(
     env,
@@ -106,6 +159,7 @@ export async function dispatchEmailJob(
     resendId: result.id,
     error: result.error,
     latencyMs: result.latencyMs,
+    postCount: tgCheckResult?.posts?.length,
   };
 }
 

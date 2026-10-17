@@ -33,9 +33,10 @@ export default function EmailJobCard({
         <span className="min-w-0 flex-1 truncate font-medium text-fg" title={job.name}>
           {job.name}
         </span>
-        <Badge tone="neutral">
-          {job.content_type.toUpperCase()}
-        </Badge>
+        <div className="flex items-center gap-1.5">
+          {job.tg_channels && <Badge tone="neutral">TG 监控</Badge>}
+          <Badge tone="neutral">{job.content_type.toUpperCase()}</Badge>
+        </div>
       </div>
 
       <div className="flex flex-col gap-1 text-xs text-fg-muted">
@@ -45,6 +46,15 @@ export default function EmailJobCard({
             {job.to_emails}
           </span>
         </div>
+        {job.tg_channels && (
+          <div className="flex items-center gap-1.5 text-xs text-primary font-mono truncate" title={job.tg_channels}>
+            <span className="font-semibold text-[11px] rounded bg-primary/10 px-1 py-0.2">TG 频道</span>
+            <span className="truncate">{job.tg_channels}</span>
+            {job.tg_keywords && (
+              <span className="text-fg-subtle truncate text-[11px]">({job.tg_keywords})</span>
+            )}
+          </div>
+        )}
         <div className="truncate text-fg">
           <span className="text-fg-subtle">标题：</span>
           <span title={job.subject}>{job.subject}</span>

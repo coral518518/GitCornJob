@@ -215,6 +215,9 @@ export type EmailJob = {
   notify_channel_ids: string | null;
   fail_streak: number;
   timezone: string | null;
+  tg_channels: string | null;
+  tg_keywords: string | null;
+  tg_state_json: string | null;
   last_status?: "success" | "failed" | null;
   last_triggered_at?: number | null;
 };

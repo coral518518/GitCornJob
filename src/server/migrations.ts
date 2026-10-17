@@ -172,6 +172,16 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_email_logs_time ON email_logs(triggered_at)`,
     ],
   },
+  {
+    // 定时邮件任务扩展：可选 Telegram 频道监控（多频道、关键词过滤、进度持久化）
+    id: 7,
+    name: "email-jobs-tg-monitor",
+    statements: [
+      "ALTER TABLE email_jobs ADD COLUMN tg_channels TEXT",
+      "ALTER TABLE email_jobs ADD COLUMN tg_keywords TEXT",
+      "ALTER TABLE email_jobs ADD COLUMN tg_state_json TEXT",
+    ],
+  },
 ];
 
 let migrated = false;
