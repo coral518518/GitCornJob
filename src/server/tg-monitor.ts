@@ -78,7 +78,7 @@ export function extractPostsFromHtml(channel: string, html: string): TgPost[] {
     if (!postMatch) continue;
 
     const parts = postMatch[1].split("/");
-    const ch = parts[0] || channel;
+    const ch = (/^[a-zA-Z0-9_]{3,}$/.test(parts[0]) ? parts[0] : channel).trim();
     const postId = Number(parts[1]);
     if (!Number.isFinite(postId) || postId <= 0 || seenIds.has(postId)) continue;
     seenIds.add(postId);
@@ -115,7 +115,7 @@ export function extractPostsFromHtml(channel: string, html: string): TgPost[] {
     posts.push({
       channel: ch,
       postId,
-      link: `https://t.me/${ch}/${postId}`,
+      link: `https://t.me/${encodeURIComponent(ch)}/${postId}`,
       text: text || undefined,
       dateStr: dateStr || undefined,
       publishedAt,

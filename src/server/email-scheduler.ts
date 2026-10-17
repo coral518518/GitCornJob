@@ -173,9 +173,9 @@ export async function triggerEmailJobOnce(
   return dispatchEmailJob(env, job, source);
 }
 
-// 免费层控制单轮并发度与批次，与 GitHub 触发(15)、轮询(15)及探测(10)共同确保单次唤醒 subrequest ≤ 50
-const EMAIL_SCHEDULE_CONCURRENCY = 4;
-const EMAIL_SCHEDULE_BATCH_LIMIT = 8;
+// 免费层控制单轮并发度与批次，严格限制在 subrequest 阈值内（单轮至多 4 个任务）
+const EMAIL_SCHEDULE_CONCURRENCY = 2;
+const EMAIL_SCHEDULE_BATCH_LIMIT = 4;
 
 export async function runDueEmailJobs(
   env: Env,
