@@ -1,20 +1,14 @@
 import { Hono } from "hono";
 import { computeNextRun, isValidTimezone, validateSchedule, type ScheduleRule } from "../schedule";
-import { getResendConfig, parseEmailList, saveResendConfig, sendResendEmail } from "../email";
+import { getResendConfig, maskApiKey, parseApiKeys, parseEmailList, saveResendConfig, sendResendEmail } from "../email";
 import { triggerEmailJobOnce } from "../email-scheduler";
 import { assertChannelsExist } from "./jobs";
 import type { EmailJobRow, Env } from "../types";
 
 const emailJobRoutes = new Hono<{ Bindings: Env }>();
 
-function maskApiKey(key: string): string {
-  if (!key) return "";
-  if (key.length <= 8) return "••••••••";
-  return `${key.slice(0, 5)}••••${key.slice(-4)}`;
-}
-
 // -------------------------------------------------------------
-// Resend 配置与测试发信接口
+// Resend 配置与测试发信接口（支持多密钥轮询与自动备用）
 // -------------------------------------------------------------
 
 emailJobRoutes.get("/config", async (c) => {
@@ -22,8 +16,10 @@ emailJobRoutes.get("/config", async (c) => {
   return c.json({
     ok: true,
     data: {
-      isConfigured: !!cfg.apiKey,
-      apiKeyMasked: maskApiKey(cfg.apiKey),
+      isConfigured: cfg.apiKeys.length > 0,
+      keyCount: cfg.apiKeys.length,
+      apiKeyMasked: cfg.apiKey ? maskApiKey(cfg.apiKey) : "",
+      apiKeysMasked: cfg.apiKeys.map(maskApiKey),
       from: cfg.from,
       replyTo: cfg.replyTo ?? "",
       source: cfg.source,
@@ -33,16 +29,24 @@ emailJobRoutes.get("/config", async (c) => {
 
 emailJobRoutes.put("/config", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as never);
-  const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : undefined;
   const from = typeof body.from === "string" ? body.from.trim() : undefined;
   const replyTo = typeof body.replyTo === "string" ? body.replyTo.trim() : undefined;
+
+  let apiKeys: string[] | undefined = undefined;
+  if (Array.isArray(body.apiKeys)) {
+    apiKeys = body.apiKeys.map(String).map((s) => s.trim()).filter(Boolean);
+  } else if (typeof body.apiKeys === "string" && body.apiKeys.trim()) {
+    apiKeys = parseApiKeys(body.apiKeys);
+  } else if (typeof body.apiKey === "string" && body.apiKey.trim()) {
+    apiKeys = parseApiKeys(body.apiKey);
+  }
 
   if (from !== undefined && !from) {
     return c.json({ ok: false, error: "发件人地址不能为空" }, 400);
   }
 
   await saveResendConfig(c.env, {
-    apiKey: apiKey || undefined,
+    apiKeys,
     from,
     replyTo: replyTo ?? "",
   });
@@ -51,8 +55,10 @@ emailJobRoutes.put("/config", async (c) => {
   return c.json({
     ok: true,
     data: {
-      isConfigured: !!updated.apiKey,
-      apiKeyMasked: maskApiKey(updated.apiKey),
+      isConfigured: updated.apiKeys.length > 0,
+      keyCount: updated.apiKeys.length,
+      apiKeyMasked: updated.apiKey ? maskApiKey(updated.apiKey) : "",
+      apiKeysMasked: updated.apiKeys.map(maskApiKey),
       from: updated.from,
       replyTo: updated.replyTo ?? "",
       source: updated.source,
@@ -69,11 +75,19 @@ emailJobRoutes.post("/test", async (c) => {
   }
 
   const storedCfg = await getResendConfig(c.env);
-  const apiKey = (typeof body.apiKey === "string" && body.apiKey.trim()) || storedCfg.apiKey;
+  let testKeys = storedCfg.apiKeys;
+  if (typeof body.apiKeys === "string" && body.apiKeys.trim()) {
+    testKeys = parseApiKeys(body.apiKeys);
+  } else if (Array.isArray(body.apiKeys) && body.apiKeys.length > 0) {
+    testKeys = body.apiKeys.map(String).map((s) => s.trim()).filter(Boolean);
+  } else if (typeof body.apiKey === "string" && body.apiKey.trim()) {
+    testKeys = parseApiKeys(body.apiKey);
+  }
+
   const from = (typeof body.from === "string" && body.from.trim()) || storedCfg.from;
   const replyTo = typeof body.replyTo === "string" ? body.replyTo.trim() : storedCfg.replyTo;
 
-  if (!apiKey) {
+  if (testKeys.length === 0) {
     return c.json({ ok: false, error: "未提供或未保存 Resend API Key" }, 400);
   }
 
@@ -86,7 +100,7 @@ emailJobRoutes.post("/test", async (c) => {
     : `这是一封由 Actions Cronjob 系统发出的测试邮件。\n\n恭喜！您的 Resend 邮件配置运作正常。\n发信时间：${new Date().toLocaleString("zh-CN")}`;
 
   const res = await sendResendEmail({
-    apiKey,
+    apiKeys: testKeys,
     from,
     to: toList,
     subject: testSubject,
@@ -99,7 +113,7 @@ emailJobRoutes.post("/test", async (c) => {
     return c.json({ ok: false, error: res.error ?? "发信失败", latencyMs: res.latencyMs }, 502);
   }
 
-  return c.json({ ok: true, data: { resendId: res.id, latencyMs: res.latencyMs } });
+  return c.json({ ok: true, data: { resendId: res.id, latencyMs: res.latencyMs, usedKeyMasked: res.usedKeyMasked } });
 });
 
 // -------------------------------------------------------------

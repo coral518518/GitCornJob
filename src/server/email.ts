@@ -7,10 +7,40 @@ export const KEY_RESEND_REPLY_TO = "resend_reply_to";
 
 export type ResendConfig = {
   apiKey: string;
+  apiKeys: string[];
   from: string;
   replyTo?: string;
   source: "db" | "env" | "none";
 };
+
+export function maskApiKey(key: string): string {
+  if (!key) return "";
+  if (key.length <= 8) return "••••••••";
+  return `${key.slice(0, 5)}••••${key.slice(-4)}`;
+}
+
+/** 解析单行、多行或 JSON 格式的多个 API Key */
+export function parseApiKeys(input: string | null | undefined): string[] {
+  if (!input) return [];
+  const trimmed = input.trim();
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed.map((s) => String(s).trim()).filter(Boolean))];
+      }
+    } catch {
+      /* 回退到按行分割 */
+    }
+  }
+  return [...new Set(trimmed.split(/[\r\n,;，；]+/).map((s) => s.trim()).filter(Boolean))];
+}
+
+/** 从密钥列表中随机选取一个 */
+export function pickRandomApiKey(keys: string[]): string {
+  if (!keys || keys.length === 0) return "";
+  return keys[Math.floor(Math.random() * keys.length)];
+}
 
 export async function getResendConfig(env: Env): Promise<ResendConfig> {
   const [dbKey, dbFrom, dbReplyTo] = await Promise.all([
@@ -19,23 +49,35 @@ export async function getResendConfig(env: Env): Promise<ResendConfig> {
     getSetting(env, KEY_RESEND_REPLY_TO).catch(() => null),
   ]);
 
-  const apiKey = (dbKey && dbKey.trim()) || (env.RESEND_API_KEY && env.RESEND_API_KEY.trim()) || "";
+  let apiKeys: string[] = [];
+  let source: ResendConfig["source"] = "none";
+
+  if (dbKey && dbKey.trim()) {
+    apiKeys = parseApiKeys(dbKey);
+    if (apiKeys.length > 0) source = "db";
+  }
+
+  if (apiKeys.length === 0 && env.RESEND_API_KEY && env.RESEND_API_KEY.trim()) {
+    apiKeys = parseApiKeys(env.RESEND_API_KEY);
+    if (apiKeys.length > 0) source = "env";
+  }
+
+  const apiKey = pickRandomApiKey(apiKeys);
   const from = (dbFrom && dbFrom.trim()) || (env.RESEND_FROM && env.RESEND_FROM.trim()) || "onboarding@resend.dev";
   const replyTo = (dbReplyTo && dbReplyTo.trim()) || undefined;
 
-  let source: ResendConfig["source"] = "none";
-  if (dbKey && dbKey.trim()) source = "db";
-  else if (env.RESEND_API_KEY && env.RESEND_API_KEY.trim()) source = "env";
-
-  return { apiKey, from, replyTo, source };
+  return { apiKey, apiKeys, from, replyTo, source };
 }
 
 export async function saveResendConfig(
   env: Env,
-  config: { apiKey?: string; from?: string; replyTo?: string }
+  config: { apiKey?: string; apiKeys?: string[]; from?: string; replyTo?: string }
 ): Promise<void> {
-  if (config.apiKey !== undefined) {
-    await setSetting(env, KEY_RESEND_API_KEY, config.apiKey.trim());
+  if (config.apiKeys !== undefined) {
+    await setSetting(env, KEY_RESEND_API_KEY, JSON.stringify(config.apiKeys));
+  } else if (config.apiKey !== undefined) {
+    const keys = parseApiKeys(config.apiKey);
+    await setSetting(env, KEY_RESEND_API_KEY, JSON.stringify(keys));
   }
   if (config.from !== undefined) {
     await setSetting(env, KEY_RESEND_FROM, config.from.trim());
@@ -258,7 +300,8 @@ function formatInline(text: string): string {
 }
 
 export type SendEmailOptions = {
-  apiKey: string;
+  apiKey?: string;
+  apiKeys?: string[];
   from: string;
   to: string[];
   subject: string;
@@ -277,15 +320,31 @@ export type SendEmailResult = {
   httpStatus: number;
   error?: string;
   latencyMs: number;
+  usedKeyMasked?: string;
 };
 
-/** 通过 Resend 发送单次邮件 */
+function shuffleArray<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+/** 通过 Resend 发送单次邮件，多密钥时随机选用一个，遭遇额度超限/429 时自动回退至其他可用密钥 */
 export async function sendResendEmail(opts: SendEmailOptions): Promise<SendEmailResult> {
   const fetchFn = opts.fetchFn ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const start = Date.now();
 
-  if (!opts.apiKey || !opts.apiKey.trim()) {
+  const candidateKeys = (
+    opts.apiKeys && opts.apiKeys.length > 0
+      ? opts.apiKeys
+      : opts.apiKey ? [opts.apiKey] : []
+  ).filter(k => k && k.trim());
+
+  if (candidateKeys.length === 0) {
     return {
       ok: false,
       httpStatus: 400,
@@ -327,48 +386,77 @@ export async function sendResendEmail(opts: SendEmailOptions): Promise<SendEmail
   if (opts.bcc && opts.bcc.length > 0) payload.bcc = opts.bcc;
   if (opts.replyTo && opts.replyTo.trim()) payload.reply_to = opts.replyTo.trim();
 
-  try {
-    const res = await fetchFn("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.apiKey.trim()}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+  // 随机排序候选密钥列表（每次随机选一个开始）
+  const keysToTry = shuffleArray(candidateKeys);
+  let lastError = "未知错误";
+  let lastHttpStatus = 0;
 
-    const latencyMs = Date.now() - start;
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  for (let i = 0; i < keysToTry.length; i++) {
+    const key = keysToTry[i];
+    try {
+      const res = await fetchFn("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key.trim()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
 
-    if (res.ok) {
+      const latencyMs = Date.now() - start;
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+      if (res.ok) {
+        return {
+          ok: true,
+          id: typeof data.id === "string" ? data.id : undefined,
+          httpStatus: res.status,
+          latencyMs,
+          usedKeyMasked: maskApiKey(key),
+        };
+      }
+
+      const errorMsg =
+        typeof data.message === "string"
+          ? data.message
+          : typeof data.error === "string"
+          ? data.error
+          : `Resend HTTP ${res.status}`;
+
+      lastError = errorMsg;
+      lastHttpStatus = res.status;
+
+      // 若遇到限流 (429) 或配额超限/受限 (403/quota)，且还有其他备用密钥，则继续尝试下一个
+      const isQuotaOrRateLimit =
+        res.status === 429 ||
+        res.status === 403 ||
+        /rate\s*limit|quota|exceeded|restricted/i.test(errorMsg);
+
+      if (isQuotaOrRateLimit && i < keysToTry.length - 1) {
+        continue;
+      }
+
       return {
-        ok: true,
-        id: typeof data.id === "string" ? data.id : undefined,
+        ok: false,
         httpStatus: res.status,
+        error: errorMsg,
         latencyMs,
+        usedKeyMasked: maskApiKey(key),
       };
+    } catch (e) {
+      lastError = (e as Error).message || "网络请求超时或未知错误";
+      lastHttpStatus = 0;
+      if (i < keysToTry.length - 1) {
+        continue;
+      }
     }
-
-    const errorMsg =
-      typeof data.message === "string"
-        ? data.message
-        : typeof data.error === "string"
-        ? data.error
-        : `Resend HTTP ${res.status}`;
-
-    return {
-      ok: false,
-      httpStatus: res.status,
-      error: errorMsg,
-      latencyMs,
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      httpStatus: 0,
-      error: (e as Error).message || "网络请求超时或未知错误",
-      latencyMs: Date.now() - start,
-    };
   }
+
+  return {
+    ok: false,
+    httpStatus: lastHttpStatus,
+    error: lastError,
+    latencyMs: Date.now() - start,
+  };
 }

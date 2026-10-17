@@ -234,7 +234,9 @@ export type EmailLog = {
 
 export type ResendConfig = {
   isConfigured: boolean;
+  keyCount: number;
   apiKeyMasked: string;
+  apiKeysMasked: string[];
   from: string;
   replyTo: string;
   source: "db" | "env" | "none";

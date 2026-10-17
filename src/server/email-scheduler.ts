@@ -51,10 +51,10 @@ export async function dispatchEmailJob(
   env: Env,
   job: EmailJobRow,
   source: TriggerSource,
-  cachedConfig?: { apiKey: string; from: string; replyTo?: string }
+  cachedConfig?: { apiKey: string; apiKeys?: string[]; from: string; replyTo?: string }
 ): Promise<EmailDispatchOutcome> {
   const config = cachedConfig ?? (await getResendConfig(env));
-  if (!config.apiKey) {
+  if (!config.apiKey && (!config.apiKeys || config.apiKeys.length === 0)) {
     const msg = "未配置 Resend API Key，请在「邮件设置」中配置";
     await recordEmailLog(env, job.id, source, "failed", null, job.to_emails, job.subject, msg, 0);
     return { ok: false, httpStatus: 400, error: msg, latencyMs: 0 };
@@ -76,6 +76,7 @@ export async function dispatchEmailJob(
   const bccList = parseEmailList(job.bcc_emails);
 
   const result = await sendResendEmail({
+    apiKeys: config.apiKeys,
     apiKey: config.apiKey,
     from: config.from,
     to: toList,

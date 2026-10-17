@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { errText, get, post, put } from "../api";
 import { useToast } from "./Toast";
 import type { ResendConfig } from "../types";
-import { Badge, Button, Dialog, Field, Input } from "../ui";
-import { Send, Check, CircleAlert, CircleCheck, LoaderCircle } from "../ui/icons";
+import { Badge, Button, Dialog, Field, Input, Textarea } from "../ui";
+import { Send, CircleAlert, CircleCheck } from "../ui/icons";
 
 type Props = {
   open: boolean;
@@ -14,7 +14,7 @@ type Props = {
 export default function ResendConfigDialog({ open, onClose, onConfigSaved }: Props) {
   const toast = useToast();
   const [config, setConfig] = useState<ResendConfig | null>(null);
-  const [apiKey, setApiKey] = useState("");
+  const [apiKeysText, setApiKeysText] = useState("");
   const [from, setFrom] = useState("");
   const [replyTo, setReplyTo] = useState("");
   const [loading, setLoading] = useState(true);
@@ -36,7 +36,7 @@ export default function ResendConfigDialog({ open, onClose, onConfigSaved }: Pro
         setConfig(data);
         setFrom(data.from || "onboarding@resend.dev");
         setReplyTo(data.replyTo || "");
-        setApiKey(""); // API Key 明文不回传
+        setApiKeysText(""); // API Key 明文不回传
       })
       .catch((e) => {
         setErr(errText(e));
@@ -49,13 +49,13 @@ export default function ResendConfigDialog({ open, onClose, onConfigSaved }: Pro
     setSaving(true);
     setErr("");
     try {
-      const payload: Record<string, string> = { from, replyTo };
-      if (apiKey.trim()) {
-        payload.apiKey = apiKey.trim();
+      const payload: Record<string, unknown> = { from, replyTo };
+      if (apiKeysText.trim()) {
+        payload.apiKeys = apiKeysText.trim();
       }
       const updated = await put<ResendConfig>("/api/email-jobs/config", payload);
       setConfig(updated);
-      setApiKey("");
+      setApiKeysText("");
       toast("Resend 邮件配置已保存", "ok");
       onConfigSaved?.();
     } catch (e) {
@@ -73,15 +73,15 @@ export default function ResendConfigDialog({ open, onClose, onConfigSaved }: Pro
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await post<{ resendId?: string; latencyMs: number }>("/api/email-jobs/test", {
+      const res = await post<{ resendId?: string; latencyMs: number; usedKeyMasked?: string }>("/api/email-jobs/test", {
         to: testTo.trim(),
-        apiKey: apiKey.trim() || undefined,
+        apiKeys: apiKeysText.trim() || undefined,
         from: from.trim() || undefined,
         replyTo: replyTo.trim() || undefined,
       });
       setTestResult({
         ok: true,
-        msg: `测试邮件发送成功！耗时 ${res.latencyMs}ms (ID: ${res.resendId || "ok"})`,
+        msg: `测试邮件发送成功！${res.usedKeyMasked ? `选用密钥 ${res.usedKeyMasked}，` : ""}耗时 ${res.latencyMs}ms (ID: ${res.resendId || "ok"})`,
       });
       toast("测试邮件已成功送出！", "ok");
     } catch (e) {
@@ -93,19 +93,21 @@ export default function ResendConfigDialog({ open, onClose, onConfigSaved }: Pro
     }
   }
 
+  const keyCount = config?.keyCount ?? (config?.apiKeysMasked?.length || (config?.isConfigured ? 1 : 0));
   const sourceLabel =
     config?.source === "db"
-      ? "数据库已配置"
+      ? `数据库存储 (${keyCount} 个密钥)`
       : config?.source === "env"
-      ? "环境变量注入"
+      ? `环境变量注入 (${keyCount} 个密钥)`
       : "未配置";
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="邮件服务配置 (Resend)"
+      title="邮件服务配置 (Resend 多密钥支持)"
       width="max-w-lg"
+      closeOnClickOutside={false}
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
@@ -122,28 +124,48 @@ export default function ResendConfigDialog({ open, onClose, onConfigSaved }: Pro
       ) : (
         <div className="space-y-4">
           <div className="flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2 text-xs">
-            <span className="text-fg-muted">当前配置来源</span>
+            <span className="text-fg-muted">当前配置状态</span>
             <Badge tone={config?.isConfigured ? "neutral" : "warn"}>
               {sourceLabel}
             </Badge>
           </div>
 
           <Field
-            label="Resend API Key"
-            hint={
-              config?.isConfigured
-                ? `已保存当前密钥：${config.apiKeyMasked}（留空表示不修改）`
-                : "前往 resend.com/api-keys 创建并粘贴在此"
-            }
+            label="Resend API Key（多密钥池）"
+            hint="可每行填写一个密钥或用逗号分隔。发信时系统随机抽取一个密钥；遇 429 限流或额度超限时自动轮转备用密钥。"
           >
             {({ id }) => (
-              <Input
-                id={id}
-                type="password"
-                placeholder={config?.isConfigured ? "留空保持现有密钥不变" : "re_xxxxxxxxxxxx"}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-              />
+              <div className="space-y-2">
+                {config && config.apiKeysMasked && config.apiKeysMasked.length > 0 && (
+                  <div className="rounded-md border border-border bg-surface-raised p-2.5">
+                    <div className="flex items-center justify-between text-xs font-medium text-fg mb-1.5">
+                      <span>已生效密钥池 ({config.apiKeysMasked.length} 个)</span>
+                      <Badge tone="success">随机轮询中</Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                      {config.apiKeysMasked.map((k, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-flex items-center rounded border border-border bg-surface px-2 py-0.5 font-mono text-[11px] text-fg-muted"
+                        >
+                          #{idx + 1}&nbsp;{k}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <Textarea
+                  id={id}
+                  rows={3}
+                  placeholder={
+                    config?.isConfigured
+                      ? "留空则保持现有密钥不变。若要更新或添加，请在此粘贴新密钥列表（每行一个）：\nre_1234567890abcdef\nre_0987654321fedcba"
+                      : "前往 resend.com/api-keys 创建并在此输入密钥。支持每行一个输入多个：\nre_1234567890abcdef\nre_0987654321fedcba"
+                  }
+                  value={apiKeysText}
+                  onChange={(e) => setApiKeysText(e.target.value)}
+                />
+              </div>
             )}
           </Field>
 

@@ -46,14 +46,14 @@ export default function EmailJobs() {
 
   async function loadData() {
     try {
-      const [jobsData, channelsData, configData] = await Promise.all([
+      const [jobsData, channelsRes, configData] = await Promise.all([
         get<EmailJob[]>("/api/email-jobs"),
-        get<Channel[]>("/api/notify").catch(() => []),
+        get<{ channels: Channel[] }>("/api/notify/channels").catch(() => ({ channels: [] })),
         get<ResendConfig>("/api/email-jobs/config").catch(() => null),
       ]);
       if (!alive.current) return;
       setList(jobsData);
-      setChannels(channelsData);
+      setChannels(channelsRes.channels);
       setResendConfig(configData);
     } catch (e) {
       if (alive.current) toast(`加载数据失败：${errText(e)}`, "err");
