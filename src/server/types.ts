@@ -19,6 +19,10 @@ export type Env = {
   COOKIE_DOMAIN?: string;
   /** Prism OAuth Scope（可选，默认 openid profile email） */
   PRISM_SCOPE?: string;
+  /** Resend API Key（可选，优选在管理后台设置存储于 settings 表） */
+  RESEND_API_KEY?: string;
+  /** Resend 发件人（可选，例如 系统通知 <noreply@yourdomain.com>） */
+  RESEND_FROM?: string;
 };
 
 export type AccountRow = {
@@ -119,4 +123,38 @@ export type ApiTokenRow = {
   last_used_at: number | null;
   created_at: number;
   updated_at: number;
+};
+
+export type EmailJobRow = {
+  id: number;
+  name: string;
+  to_emails: string;
+  cc_emails: string | null;
+  bcc_emails: string | null;
+  subject: string;
+  content: string;
+  content_type: "text" | "html" | "markdown";
+  schedule_json: string;
+  enabled: number;
+  next_run_at: number;
+  last_run_at: number | null;
+  notify: number;
+  notify_channel_ids: string | null;
+  fail_streak: number;
+  timezone: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export type EmailLogRow = {
+  id: number;
+  job_id: number;
+  triggered_at: number;
+  source: "schedule" | "manual";
+  status: "success" | "failed";
+  resend_id: string | null;
+  to_emails: string;
+  subject: string;
+  error_message: string | null;
+  latency_ms: number | null;
 };

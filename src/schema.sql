@@ -123,6 +123,43 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 CREATE INDEX IF NOT EXISTS idx_heartbeats_monitor ON heartbeats(monitor_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeats_time ON heartbeats(created_at);
 
+CREATE TABLE IF NOT EXISTS email_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  to_emails TEXT NOT NULL,
+  cc_emails TEXT,
+  bcc_emails TEXT,
+  subject TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'html' CHECK (content_type IN ('text','html','markdown')),
+  schedule_json TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at INTEGER NOT NULL,
+  last_run_at INTEGER,
+  notify INTEGER NOT NULL DEFAULT 0,
+  notify_channel_ids TEXT,
+  fail_streak INTEGER NOT NULL DEFAULT 0,
+  timezone TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_jobs_due ON email_jobs(enabled, next_run_at);
+
+CREATE TABLE IF NOT EXISTS email_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES email_jobs(id) ON DELETE CASCADE,
+  triggered_at INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL,
+  resend_id TEXT,
+  to_emails TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  error_message TEXT,
+  latency_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_email_logs_job ON email_logs(job_id, triggered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_logs_time ON email_logs(triggered_at);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -134,7 +171,8 @@ INSERT OR IGNORE INTO schema_migrations (id, name, applied_at) VALUES
   (2, 'gh-run-tracking', 1700000000000),
   (3, 'heartbeat-monitors', 1700000000000),
   (4, 'monitor-pause-window', 1700000000000),
-  (5, 'api-tokens', 1700000000000);
+  (5, 'api-tokens', 1700000000000),
+  (6, 'email-jobs-and-logs', 1700000000000);
 
 -- ============================================================
 -- 字段与维护说明

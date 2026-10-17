@@ -6,6 +6,7 @@ import { ConfirmProvider } from "./ui/ConfirmDialog";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Jobs from "./pages/Jobs";
+import EmailJobs from "./pages/EmailJobs";
 import Monitors from "./pages/Monitors";
 import Accounts from "./pages/Accounts";
 import Runs from "./pages/Runs";
@@ -22,6 +23,7 @@ export default function App() {
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/jobs" element={<Jobs />} />
+            <Route path="/emails" element={<EmailJobs />} />
             <Route path="/monitors" element={<Monitors />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="/runs" element={<Runs />} />

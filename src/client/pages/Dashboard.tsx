@@ -5,7 +5,7 @@ import PageHeader from "../components/PageHeader";
 import type { Job, Run, Stats } from "../types";
 import { SOURCE_LABEL } from "../types";
 import { Card, EmptyState, Skeleton, SkeletonCard, Button, cx } from "../ui";
-import { ArrowRight, Activity, CircleAlert, CircleCheck, CircleX, Clock, HeartPulse, Inbox, LoaderCircle, RefreshCw, Timer, Users } from "../ui/icons";
+import { ArrowRight, Activity, CircleAlert, CircleCheck, CircleX, Clock, HeartPulse, Inbox, LoaderCircle, Mail, RefreshCw, Timer, Users } from "../ui/icons";
 import { fmtShort, fmtShortTz, relativeTime } from "../utils/time";
 import { useAlive } from "../utils/useAlive";
 import { useAutoRefresh } from "../utils/useAutoRefresh";
@@ -36,6 +36,17 @@ const CARDS: StatCard[] = [
   { key: "accounts", label: "账号", icon: <Users className="size-4" />, to: () => "/accounts" },
   { key: "total_jobs", label: "任务", icon: <Timer className="size-4" />, to: () => "/jobs",
     sub: s => `启用 ${s.enabled_jobs} / ${s.total_jobs}` },
+  { key: "total_email_jobs", label: "定时邮件", icon: <Mail className="size-4" />, to: () => "/emails",
+    value: s => s.total_email_jobs ?? 0,
+    sub: s => {
+      const today = s.today_email_sent ?? 0;
+      const failed = s.failed_email_24h ?? 0;
+      if (failed > 0) return `今日已发 ${today} (失败 ${failed})`;
+      return `启用 ${s.enabled_email_jobs ?? 0} · 今日发 ${today}`;
+    },
+    subDanger: s => (s.failed_email_24h ?? 0) > 0,
+    tint: s => (s.failed_email_24h ?? 0) > 0,
+    subTo: () => "/emails" },
   { key: "total_monitors", label: "监控", icon: <HeartPulse className="size-4" />, to: () => "/monitors",
     sub: s => (s.down_monitors > 0 ? `故障 ${s.down_monitors}` : "全部正常"),
     subDanger: s => s.down_monitors > 0,
@@ -116,7 +127,7 @@ export default function Dashboard() {
     <div>
       <PageHeader title="仪表盘" description="定时任务的运行概况与接下来的触发计划。" />
 
-      <div aria-busy={stats === null && !statsError} className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      <div aria-busy={stats === null && !statsError} className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-6">
         {statsError ? (
           <div className="col-span-full flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger">
             <span>统计数据加载失败。</span>

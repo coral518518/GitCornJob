@@ -144,3 +144,11 @@ export function notifyLinkJobFailed(p: { name: string; error?: string | null }):
 export function notifyTest(p: { channelName: string }): NotifyPayload {
   return compose("test", `[${p.channelName}] [🔔 连通正常]`);
 }
+
+export function notifyEmailJobFailed(p: { name: string; error?: string | null }): NotifyPayload {
+  return compose("job_failed", `[${p.name}] [📧 邮件发送失败]${p.error ? ` ${p.error}` : ""}`);
+}
+
+export function notifyEmailJobAutoPaused(p: { name: string; error?: string | null }): NotifyPayload {
+  return compose("job_auto_paused", `[${p.name}] [⛔ 邮件任务已自动停用]${p.error ? ` ${p.error}` : ""}`);
+}

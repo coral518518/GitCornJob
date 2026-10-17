@@ -188,6 +188,56 @@ export type Stats = {
   success_rate_7d: number | null;
   /** 调度器最近一轮活动时间；从未运行过为 null */
   scheduler_last_run_at: number | null;
+  /** 定时邮件任务总数 */
+  total_email_jobs?: number;
+  /** 启用中的邮件任务数 */
+  enabled_email_jobs?: number;
+  /** 今日发送邮件数 */
+  today_email_sent?: number;
+  /** 近 24 小时邮件发送失败数 */
+  failed_email_24h?: number;
+};
+
+export type EmailJob = {
+  id: number;
+  name: string;
+  to_emails: string;
+  cc_emails: string | null;
+  bcc_emails: string | null;
+  subject: string;
+  content: string;
+  content_type: "text" | "html" | "markdown";
+  schedule_json: string;
+  enabled: number;
+  next_run_at: number;
+  last_run_at: number | null;
+  notify: number;
+  notify_channel_ids: string | null;
+  fail_streak: number;
+  timezone: string | null;
+  last_status?: "success" | "failed" | null;
+  last_triggered_at?: number | null;
+};
+
+export type EmailLog = {
+  id: number;
+  job_id: number;
+  triggered_at: number;
+  source: "schedule" | "manual";
+  status: "success" | "failed";
+  resend_id: string | null;
+  to_emails: string;
+  subject: string;
+  error_message: string | null;
+  latency_ms: number | null;
+};
+
+export type ResendConfig = {
+  isConfigured: boolean;
+  apiKeyMasked: string;
+  from: string;
+  replyTo: string;
+  source: "db" | "env" | "none";
 };
 
 /** 公开状态页配置（管理端读写，单页） */
@@ -213,3 +263,4 @@ export type StatusPageData = {
     beats: Array<{ created_at: number; status: "up" | "down"; http_status: number | null; latency_ms: number | null }>;
   }>;
 };
+

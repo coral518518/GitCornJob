@@ -23,9 +23,13 @@ miscRoutes.get("/stats", async (c) => {
             AND gh_state='done' AND COALESCE(gh_conclusion,'')!='success') AS gh_failed_24h,
          (SELECT COUNT(*) FROM runs WHERE triggered_at>=? AND gh_state='done') AS gh_done_7d,
          (SELECT COUNT(*) FROM runs WHERE triggered_at>=? AND gh_state='done'
-            AND gh_conclusion='success') AS gh_success_7d`,
+            AND gh_conclusion='success') AS gh_success_7d,
+         (SELECT COUNT(*) FROM email_jobs) AS total_email_jobs,
+         (SELECT COUNT(*) FROM email_jobs WHERE enabled=1) AS enabled_email_jobs,
+         (SELECT COUNT(*) FROM email_logs WHERE triggered_at>=?) AS today_email_sent,
+         (SELECT COUNT(*) FROM email_logs WHERE triggered_at>=? AND status='failed') AS failed_email_24h`,
     )
-      .bind(dayStart.getTime(), Date.now() - 24 * 3600 * 1000, Date.now() - 24 * 3600 * 1000, weekAgo, weekAgo)
+      .bind(dayStart.getTime(), Date.now() - 24 * 3600 * 1000, Date.now() - 24 * 3600 * 1000, weekAgo, weekAgo, dayStart.getTime(), Date.now() - 24 * 3600 * 1000)
       .first(),
     getSetting(c.env, KEY_SCHEDULER_HEARTBEAT),
   ]);

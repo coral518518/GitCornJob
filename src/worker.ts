@@ -12,9 +12,11 @@ import tokenRoutes from "./server/routes/tokens";
 import triggerRoutes from "./server/routes/trigger";
 import statusRoutes from "./server/routes/status";
 import statusPageRoutes from "./server/routes/status-page";
+import emailJobRoutes from "./server/routes/email-jobs";
 import { requireAuth } from "./server/middleware";
 import { runDueJobs } from "./server/scheduler";
 import { runDueMonitors } from "./server/monitor";
+import { runDueEmailJobs } from "./server/email-scheduler";
 import { ensureMigrated } from "./server/migrations";
 import { PrismWorker, type AuthenticatedRequest, type PrismEnv, type PrismUser } from "prism-authts";
 import type { Env } from "./server/types";
@@ -31,6 +33,7 @@ const protectedApi = new Hono<{ Bindings: Env }>();
 protectedApi.use("*", requireAuth);
 protectedApi.route("/accounts", accountRoutes);
 protectedApi.route("/jobs", jobRoutes);
+protectedApi.route("/email-jobs", emailJobRoutes);
 protectedApi.route("/monitors", monitorRoutes);
 protectedApi.route("/runs", runRoutes);
 protectedApi.route("/password", passwordRoutes);
@@ -105,5 +108,6 @@ export default {
     const now = Date.now();
     await runDueJobs(env, now, ctx);
     await runDueMonitors(env, now, ctx);
+    await runDueEmailJobs(env, now, ctx);
   },
 } satisfies ExportedHandler<Env>;
