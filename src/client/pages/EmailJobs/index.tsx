@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { del, errText, get, post, put } from "../../api";
 import PageHeader from "../../components/PageHeader";
 import { useToast } from "../../components/Toast";
-import type { Channel, EmailJob, ResendConfig } from "../../types";
+import type { Channel, EmailJob, ResendConfig, WxPusherConfig } from "../../types";
 import { Button, EmptyState, Input, Segmented, SkeletonCard, useConfirm } from "../../ui";
-import { CircleAlert, Clock, Mail, Plus, Settings } from "../../ui/icons";
+import { Bot, CircleAlert, Clock, Plus, Settings } from "../../ui/icons";
 import { useAlive } from "../../utils/useAlive";
 import { useAutoRefresh } from "../../utils/useAutoRefresh";
 import ResendConfigDialog from "../../components/ResendConfigDialog";
+import WxPusherConfigDialog from "../../components/WxPusherConfigDialog";
 import EmailJobCard from "./EmailJobCard";
 import EmailJobForm, { EMPTY_EMAIL_FORM, type EmailJobFormData } from "./EmailJobForm";
 import EmailLogsDialog from "./EmailLogsDialog";
@@ -19,6 +20,7 @@ export default function EmailJobs() {
   const [list, setList] = useState<EmailJob[] | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [resendConfig, setResendConfig] = useState<ResendConfig | null>(null);
+  const [wxPusherConfig, setWxPusherConfig] = useState<WxPusherConfig | null>(null);
 
   // 弹窗与抽屉状态
   const [form, setForm] = useState<EmailJobFormData | null>(null);
@@ -28,11 +30,12 @@ export default function EmailJobs() {
   const [triggeringId, setTriggeringId] = useState<number | null>(null);
   const [logsJob, setLogsJob] = useState<EmailJob | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
+  const [wxPusherOpen, setWxPusherOpen] = useState(false);
 
   // 过滤状态
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "enabled" | "disabled">("all");
-  const [typeFilter, setTypeFilter] = useState<"all" | "email" | "http">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "email" | "http" | "clawbot">("all");
 
   const alive = useAlive();
 
@@ -47,15 +50,17 @@ export default function EmailJobs() {
 
   async function loadData() {
     try {
-      const [jobsData, channelsRes, configData] = await Promise.all([
+      const [jobsData, channelsRes, configData, wxData] = await Promise.all([
         get<EmailJob[]>("/api/email-jobs"),
         get<{ channels: Channel[] }>("/api/notify/channels").catch(() => ({ channels: [] })),
         get<ResendConfig>("/api/email-jobs/config").catch(() => null),
+        get<WxPusherConfig>("/api/email-jobs/wxpusher-config").catch(() => null),
       ]);
       if (!alive.current) return;
       setList(jobsData);
       setChannels(channelsRes.channels);
       setResendConfig(configData);
+      setWxPusherConfig(wxData);
     } catch (e) {
       if (alive.current) toast(`加载数据失败：${errText(e)}`, "err");
     }
@@ -66,7 +71,7 @@ export default function EmailJobs() {
   }, []);
 
   // 免费层优化：60s 周期，且弹窗打开时暂停轮询；轮询只刷新任务列表，避免重复请求配置与渠道
-  useAutoRefresh(reloadJobs, 60_000, !form && !logsJob && !configOpen);
+  useAutoRefresh(reloadJobs, 60_000, !form && !logsJob && !configOpen && !wxPusherOpen);
 
   function openCreate() {
     const f: EmailJobFormData = { ...EMPTY_EMAIL_FORM };
@@ -96,6 +101,8 @@ export default function EmailJobs() {
       http_method: job.http_method || "GET",
       http_headers: job.http_headers || "",
       http_body: job.http_body || "",
+      wxpusher_uids: job.wxpusher_uids || "",
+      tg_bot_token: job.tg_bot_token || "",
     };
     setForm(f);
     setSnapshot(f);
@@ -123,14 +130,17 @@ export default function EmailJobs() {
 
   async function handleTrigger(job: EmailJob) {
     const isHttp = job.task_type === "http";
+    const isClawBot = job.task_type === "clawbot";
     const targetDesc = isHttp
       ? `请求「${job.http_method || "GET"} ${job.http_url}」`
+      : isClawBot
+      ? `拉取 TG 消息并推送微信（UID: ${job.wxpusher_uids || "默认"}）`
       : `投递至「${job.to_emails}」`;
 
     const ok = await confirm({
-      title: isHttp ? "立即请求目标接口" : "立即发送邮件",
+      title: isHttp ? "立即请求目标接口" : isClawBot ? "立即触发微信 ClawBot 推送" : "立即发送邮件",
       description: `确定立即执行一次「${job.name}」（${targetDesc}）吗？${
-        !isHttp && job.tg_channels ? "（已关联 Telegram 监控，有新消息时才发信）" : ""
+        !isHttp && !isClawBot && job.tg_channels ? "（已关联 Telegram 监控，有新消息时才发信）" : ""
       }`,
       confirmText: "立即执行",
     });
@@ -192,6 +202,8 @@ export default function EmailJobs() {
         http_method: form.http_method || undefined,
         http_headers: form.http_headers.trim() || undefined,
         http_body: form.http_body || undefined,
+        wxpusher_uids: form.wxpusher_uids.trim() || undefined,
+        tg_bot_token: form.tg_bot_token.trim() || undefined,
         schedule: form.schedule,
         notify: form.notify,
         notify_channel_ids: form.channelIds,
@@ -241,6 +253,7 @@ export default function EmailJobs() {
     if (statusFilter === "disabled" && j.enabled === 1) return false;
     if (typeFilter === "email" && j.task_type !== "email") return false;
     if (typeFilter === "http" && j.task_type !== "http") return false;
+    if (typeFilter === "clawbot" && j.task_type !== "clawbot") return false;
 
     if (!search.trim()) return true;
     const q = search.toLowerCase();
@@ -248,7 +261,8 @@ export default function EmailJobs() {
       j.name.toLowerCase().includes(q) ||
       (j.to_emails && j.to_emails.toLowerCase().includes(q)) ||
       (j.subject && j.subject.toLowerCase().includes(q)) ||
-      (j.http_url && j.http_url.toLowerCase().includes(q))
+      (j.http_url && j.http_url.toLowerCase().includes(q)) ||
+      (j.wxpusher_uids && j.wxpusher_uids.toLowerCase().includes(q))
     );
   });
 
@@ -265,6 +279,13 @@ export default function EmailJobs() {
               icon={<Settings className="size-4" />}
             >
               Resend 邮件设置
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setWxPusherOpen(true)}
+              icon={<Bot className="size-4" />}
+            >
+              WxPusher 微信设置
             </Button>
             <Button
               variant="primary"
@@ -298,8 +319,9 @@ export default function EmailJobs() {
               { value: "all", label: "全部类型" },
               { value: "email", label: "邮件" },
               { value: "http", label: "HTTP 接口" },
+              { value: "clawbot", label: "微信ClawBot" },
             ]}
-            onChange={(v) => setTypeFilter(v as "all" | "email" | "http")}
+            onChange={(v) => setTypeFilter(v as "all" | "email" | "http" | "clawbot")}
           />
           <Segmented
             label="状态筛选"
@@ -387,6 +409,12 @@ export default function EmailJobs() {
       <ResendConfigDialog
         open={configOpen}
         onClose={() => setConfigOpen(false)}
+        onConfigSaved={loadData}
+      />
+
+      <WxPusherConfigDialog
+        open={wxPusherOpen}
+        onClose={() => setWxPusherOpen(false)}
         onConfigSaved={loadData}
       />
     </div>

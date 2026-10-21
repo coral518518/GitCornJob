@@ -12,6 +12,8 @@ import {
   Play,
   Timer,
   Trash2,
+  Bot,
+  MessageSquare,
 } from "../../ui/icons";
 import type { EmailJob } from "../../types";
 import { fmtShort, fmtShortTz, relativeTime } from "../../utils/time";
@@ -40,6 +42,7 @@ export default function EmailJobCard({
   const schedule = describeLocal(scheduleJson, job.timezone);
   const dTz = displayTzOf(scheduleJson, job.timezone);
   const isHttp = job.task_type === "http";
+  const isClawBot = job.task_type === "clawbot";
 
   const methodTone = (m: string): "neutral" | "success" | "warn" | "danger" => {
     switch (m.toUpperCase()) {
@@ -70,6 +73,11 @@ export default function EmailJobCard({
               </Badge>
               <Badge tone="neutral">HTTP 接口</Badge>
             </>
+          ) : isClawBot ? (
+            <>
+              <Badge tone="success">微信推送</Badge>
+              <Badge tone="neutral">ClawBot</Badge>
+            </>
           ) : (
             <>
               {job.tg_channels && <Badge tone="neutral">TG 监控</Badge>}
@@ -93,6 +101,23 @@ export default function EmailJobCard({
               {job.http_headers && <span>包含自定义请求头</span>}
               {job.http_body && <span>包含请求体 (Body)</span>}
               {!job.http_headers && !job.http_body && <span>标准 HTTP 请求</span>}
+            </div>
+          </>
+        ) : isClawBot ? (
+          <>
+            <div className="flex items-center gap-1.5 font-mono">
+              <MessageSquare className="size-3.5 shrink-0 text-success" aria-hidden />
+              <span className="truncate text-fg font-medium" title={job.wxpusher_uids || ""}>
+                微信 UID: {job.wxpusher_uids || "未设置"}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 text-xs text-primary font-mono truncate">
+              <Bot className="size-3.5 shrink-0" aria-hidden />
+              <span className="truncate">
+                {job.tg_bot_token?.startsWith("channel:")
+                  ? `关联 TG 频道 (ID: ${job.tg_bot_token.replace("channel:", "")})`
+                  : "自定义 Telegram Bot"}
+              </span>
             </div>
           </>
         ) : (

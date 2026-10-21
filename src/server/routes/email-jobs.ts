@@ -4,9 +4,151 @@ import { getResendConfig, maskApiKey, parseApiKeys, parseEmailList, saveResendCo
 import { fetchChannelPosts, parseTgChannels, parseTgKeywords, type TgPost } from "../tg-monitor";
 import { executeHttpRequest, triggerEmailJobOnce } from "../email-scheduler";
 import { assertChannelsExist } from "./jobs";
+import {
+  extractTgBotToken,
+  fetchTgBotUpdates,
+  getWxPusherConfig,
+  maskAppToken,
+  parseWxPusherUids,
+  resolveTgBotToken,
+  saveWxPusherConfig,
+  sendWxPusherMessage,
+} from "../wxpusher";
+import { getChannel } from "../notify";
 import type { EmailJobRow, Env, TaskType } from "../types";
 
 const emailJobRoutes = new Hono<{ Bindings: Env }>();
+
+// -------------------------------------------------------------
+// WxPusher 微信配置与测试接口
+// -------------------------------------------------------------
+
+emailJobRoutes.get("/wxpusher-config", async (c) => {
+  const cfg = await getWxPusherConfig(c.env);
+  return c.json({
+    ok: true,
+    data: {
+      isConfigured: !!cfg.appToken,
+      appTokenMasked: maskAppToken(cfg.appToken),
+      defaultUids: cfg.defaultUids,
+      source: cfg.source,
+    },
+  });
+});
+
+emailJobRoutes.put("/wxpusher-config", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as never);
+  const appToken = typeof body.appToken === "string" ? body.appToken.trim() : undefined;
+  const defaultUids = typeof body.defaultUids === "string" ? body.defaultUids.trim() : undefined;
+
+  await saveWxPusherConfig(c.env, { appToken, defaultUids });
+  const updated = await getWxPusherConfig(c.env);
+  return c.json({
+    ok: true,
+    data: {
+      isConfigured: !!updated.appToken,
+      appTokenMasked: maskAppToken(updated.appToken),
+      defaultUids: updated.defaultUids,
+      source: updated.source,
+    },
+  });
+});
+
+emailJobRoutes.post("/wxpusher-test", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as never);
+  const cfg = await getWxPusherConfig(c.env);
+  const appToken = (typeof body.appToken === "string" && body.appToken.trim()) || cfg.appToken;
+  if (!appToken) {
+    return c.json({ ok: false, error: "未提供或未保存 WxPusher App Token" }, 400);
+  }
+
+  const rawUids = typeof body.uids === "string" && body.uids.trim() ? body.uids : cfg.defaultUids;
+  const uids = parseWxPusherUids(rawUids);
+  if (uids.length === 0) {
+    return c.json({ ok: false, error: "请填写至少一个测试接收 UID" }, 400);
+  }
+
+  const content = typeof body.content === "string" && body.content.trim()
+    ? body.content.trim()
+    : `### 🔔 WxPusher 连通性测试\n这是一条来自定时任务系统的微信推送测试消息。\n\n- 测试时间：\`${new Date().toLocaleString("zh-CN")}\`\n- 状态：**运作正常**`;
+
+  const res = await sendWxPusherMessage({
+    appToken,
+    content,
+    contentType: 3,
+    uids,
+    summary: "WxPusher 连通性测试消息",
+  });
+
+  if (!res.ok) {
+    return c.json({ ok: false, error: res.msg || "发送测试消息失败", latencyMs: res.latencyMs }, 502);
+  }
+
+  return c.json({
+    ok: true,
+    data: {
+      latencyMs: res.latencyMs,
+      msg: res.msg,
+      count: uids.length,
+      uids,
+    },
+  });
+});
+
+emailJobRoutes.post("/test-tg-bot", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as never);
+  const rawToken = typeof body.token === "string" ? body.token.trim() : (typeof body.botToken === "string" ? body.botToken.trim() : "");
+  const botToken = await resolveTgBotToken(rawToken, c.env);
+
+  if (!botToken) {
+    return c.json({ ok: false, error: "请选择有效渠道或输入 Telegram Bot Token" }, 400);
+  }
+
+  // 获取 Telegram Bot 基本信息
+  let botInfo: { id: number; username: string; first_name: string } | undefined = undefined;
+  try {
+    const meRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (meRes.ok) {
+      const meData = (await meRes.json()) as { ok: boolean; result?: { id: number; username: string; first_name: string } };
+      if (meData.ok && meData.result) {
+        botInfo = {
+          id: meData.result.id,
+          username: meData.result.username,
+          first_name: meData.result.first_name,
+        };
+      }
+    }
+  } catch {
+    /* 允许 getMe 容错，继续尝试获取 getUpdates */
+  }
+
+  const res = await fetchTgBotUpdates(botToken, undefined, 0);
+  if (!res.ok) {
+    return c.json({ ok: false, error: res.error || "探测失败" }, 502);
+  }
+
+  return c.json({
+    ok: true,
+    data: {
+      ok: true,
+      bot: botInfo,
+      unreadCount: res.updates.length,
+      messageCount: res.updates.length,
+      latencyMs: res.latencyMs,
+      previews: res.updates.slice(-5).map((u) => {
+        const m = u.message || u.channel_post || u.edited_message;
+        return {
+          updateId: u.update_id,
+          sender: m?.from?.first_name || m?.chat?.title || "未知",
+          text: m?.text || m?.caption || "[多媒体消息]",
+          date: m?.date ? new Date(m.date * 1000).toLocaleString("zh-CN") : "",
+        };
+      }),
+    },
+  });
+});
 
 // -------------------------------------------------------------
 // HTTP 接口在线测试与探测接口
@@ -34,13 +176,16 @@ emailJobRoutes.post("/test-http", async (c) => {
   });
 
   return c.json({
-    ok: res.ok,
-    status: res.status,
-    statusText: res.statusText,
-    latencyMs: res.latencyMs,
-    headers: res.headers,
-    bodyPreview: res.bodyPreview,
-    error: res.error,
+    ok: true,
+    data: {
+      ok: res.ok,
+      status: res.status,
+      statusText: res.statusText,
+      latencyMs: res.latencyMs,
+      headers: res.headers,
+      bodyPreview: res.bodyPreview,
+      error: res.error,
+    },
   });
 });
 
@@ -199,6 +344,8 @@ type EmailJobInput = {
   http_method: string | null;
   http_headers: string | null;
   http_body: string | null;
+  wxpusher_uids: string | null;
+  tg_bot_token: string | null;
   notify: number;
   notify_channel_ids: string | null;
   timezone: string | null;
@@ -215,7 +362,11 @@ function validateEmailJobBody(body: Record<string, unknown>): {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name || name.length > 100) return { ok: false, error: "任务名必填（≤100 字）" };
 
-  const task_type: TaskType = body.task_type === "http" ? "http" : "email";
+  const task_type: TaskType = body.task_type === "clawbot"
+    ? "clawbot"
+    : body.task_type === "http"
+    ? "http"
+    : "email";
 
   let to_emails = "";
   let cc_emails: string | null = null;
@@ -231,7 +382,23 @@ function validateEmailJobBody(body: Record<string, unknown>): {
   let http_headers: string | null = null;
   let http_body: string | null = null;
 
-  if (task_type === "http") {
+  let wxpusher_uids: string | null = null;
+  let tg_bot_token: string | null = null;
+
+  if (task_type === "clawbot") {
+    const rawUids = typeof body.wxpusher_uids === "string" ? body.wxpusher_uids.trim() : "";
+    const parsedUids = parseWxPusherUids(rawUids);
+    wxpusher_uids = parsedUids.join(", ");
+
+    tg_bot_token = typeof body.tg_bot_token === "string" && body.tg_bot_token.trim()
+      ? body.tg_bot_token.trim()
+      : null;
+
+    to_emails = "";
+    subject = "Telegram 机器人未读消息 -> 微信ClawBot";
+    content = "";
+    content_type = "markdown";
+  } else if (task_type === "http") {
     http_url = typeof body.http_url === "string" ? body.http_url.trim() : "";
     if (!http_url) return { ok: false, error: "接口地址 (URL) 不能为空" };
     if (!/^https?:\/\//i.test(http_url)) {
@@ -318,6 +485,8 @@ function validateEmailJobBody(body: Record<string, unknown>): {
       http_method,
       http_headers,
       http_body,
+      wxpusher_uids,
+      tg_bot_token,
       notify,
       notify_channel_ids,
       timezone,
@@ -356,9 +525,10 @@ emailJobRoutes.post("/", async (c) => {
     `INSERT INTO email_jobs (
       name, task_type, to_emails, cc_emails, bcc_emails, subject, content, content_type,
       http_url, http_method, http_headers, http_body,
+      wxpusher_uids, tg_bot_token,
       schedule_json, notify, notify_channel_ids, timezone, tg_channels, tg_keywords, tg_state_json,
       enabled, next_run_at, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   )
     .bind(
       v.data.name,
@@ -373,6 +543,8 @@ emailJobRoutes.post("/", async (c) => {
       v.data.http_method,
       v.data.http_headers,
       v.data.http_body,
+      v.data.wxpusher_uids,
+      v.data.tg_bot_token,
       JSON.stringify(v.schedule),
       v.data.notify,
       v.data.notify_channel_ids,
@@ -427,6 +599,7 @@ emailJobRoutes.put("/:id", async (c) => {
     `UPDATE email_jobs SET
       name=?, task_type=?, to_emails=?, cc_emails=?, bcc_emails=?, subject=?, content=?, content_type=?,
       http_url=?, http_method=?, http_headers=?, http_body=?,
+      wxpusher_uids=?, tg_bot_token=?,
       schedule_json=?, notify=?, notify_channel_ids=?, timezone=?, tg_channels=?, tg_keywords=?,
       enabled=?, next_run_at=?, updated_at=?
     WHERE id=?`
@@ -444,6 +617,8 @@ emailJobRoutes.put("/:id", async (c) => {
       v.data.http_method,
       v.data.http_headers,
       v.data.http_body,
+      v.data.wxpusher_uids,
+      v.data.tg_bot_token,
       JSON.stringify(v.schedule),
       v.data.notify,
       v.data.notify_channel_ids,

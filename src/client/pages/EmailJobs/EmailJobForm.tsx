@@ -14,10 +14,11 @@ import {
   CircleCheck,
   CircleAlert,
   Mail,
-  Webhook,
   X,
   Play,
-  LoaderCircle,
+  Bot,
+  MessageSquare,
+  RefreshCw,
 } from "../../ui/icons";
 import { cx, focusRing } from "../../ui/styles";
 
@@ -40,6 +41,9 @@ export type EmailJobFormData = {
   http_method: string;
   http_headers: string;
   http_body: string;
+  // 微信 ClawBot (WxPusher) 字段
+  wxpusher_uids: string;
+  tg_bot_token: string;
   // 调度与告警
   schedule: Schedule;
   notify: number;
@@ -63,13 +67,23 @@ export const EMPTY_EMAIL_FORM: EmailJobFormData = {
   http_method: "GET",
   http_headers: "",
   http_body: "",
+  wxpusher_uids: "",
+  tg_bot_token: "",
   schedule: EMPTY_SCHEDULE,
   notify: 0,
   channelIds: null,
   timezone: LOCAL_TZ,
 };
 
-type Key = "name" | "to_emails" | "subject" | "content" | "tg_channels" | "http_url";
+type Key =
+  | "name"
+  | "to_emails"
+  | "subject"
+  | "content"
+  | "tg_channels"
+  | "http_url"
+  | "wxpusher_uids"
+  | "tg_bot_token";
 
 const ALL_TOUCHED: Record<Key, boolean> = {
   name: true,
@@ -78,6 +92,8 @@ const ALL_TOUCHED: Record<Key, boolean> = {
   content: true,
   tg_channels: true,
   http_url: true,
+  wxpusher_uids: true,
+  tg_bot_token: true,
 };
 
 function validate(f: EmailJobFormData): Record<Key, string | null> {
@@ -93,6 +109,23 @@ function validate(f: EmailJobFormData): Record<Key, string | null> {
     return {
       name: nameErr,
       http_url: urlErr,
+      to_emails: null,
+      subject: null,
+      content: null,
+      tg_channels: null,
+      wxpusher_uids: null,
+      tg_bot_token: null,
+    };
+  }
+
+  if (f.task_type === "clawbot") {
+    const tgErr = f.tg_bot_token.trim() ? null : "请选择或输入 Telegram Bot Token";
+    const wxErr = f.wxpusher_uids.trim() ? null : "请输入微信接收用户的 WxPusher UID";
+    return {
+      name: nameErr,
+      tg_bot_token: tgErr,
+      wxpusher_uids: wxErr,
+      http_url: null,
       to_emails: null,
       subject: null,
       content: null,
@@ -123,6 +156,8 @@ function validate(f: EmailJobFormData): Record<Key, string | null> {
     content: f.content.trim() ? null : "邮件正文不能为空",
     tg_channels: tgErr,
     http_url: null,
+    wxpusher_uids: null,
+    tg_bot_token: null,
   };
 }
 
@@ -205,6 +240,21 @@ export default function EmailJobForm({
     headers: Record<string, string>;
     bodyPreview: string;
     error?: string;
+  } | null>(null);
+
+  // ClawBot (TG 探测 & WxPusher 推送) 状态
+  const [testingTgBot, setTestingTgBot] = useState(false);
+  const [tgBotResult, setTgBotResult] = useState<{
+    ok: boolean;
+    bot?: { id: number; username: string; first_name: string };
+    unreadCount?: number;
+    error?: string;
+  } | null>(null);
+
+  const [testingWxPusher, setTestingWxPusher] = useState(false);
+  const [wxPusherResult, setWxPusherResult] = useState<{
+    ok: boolean;
+    msg: string;
   } | null>(null);
 
   const attemptClose = useCallback(async () => {
@@ -331,6 +381,59 @@ export default function EmailJobForm({
     }
   }
 
+  async function handleTestTgBot() {
+    if (!form.tg_bot_token.trim()) return;
+    setTestingTgBot(true);
+    setTgBotResult(null);
+    try {
+      const res = await post<{
+        ok: boolean;
+        bot?: { id: number; username: string; first_name: string };
+        unreadCount: number;
+        error?: string;
+      }>("/api/email-jobs/test-tg-bot", {
+        token: form.tg_bot_token,
+      });
+      setTgBotResult(res);
+    } catch (e) {
+      setTgBotResult({
+        ok: false,
+        error: errText(e),
+      });
+    } finally {
+      setTestingTgBot(false);
+    }
+  }
+
+  async function handleTestWxPusher() {
+    if (!form.wxpusher_uids.trim()) return;
+    setTestingWxPusher(true);
+    setWxPusherResult(null);
+    try {
+      const res = await post<{
+        ok: boolean;
+        count: number;
+        uids: string[];
+      }>("/api/email-jobs/wxpusher-test", {
+        uids: form.wxpusher_uids,
+        content: `### 🤖 GitCornJob 微信 ClawBot 通道联通测试\n\n- **状态**：✅ 发送成功\n- **关联任务**：${form.name || "新建任务"}\n- **测试时间**：${new Date().toLocaleString()}\n\n此条为表单手动触发的连通性校验，说明 WxPusher App Token 与接收用户 UID 配置完全正确！`,
+      });
+      setWxPusherResult({
+        ok: true,
+        msg: `WxPusher 发送成功！已向 ${res.count} 位用户投递测试消息。`,
+      });
+    } catch (e) {
+      setWxPusherResult({
+        ok: false,
+        msg: `WxPusher 发送失败：${errText(e)}`,
+      });
+    } finally {
+      setTestingWxPusher(false);
+    }
+  }
+
+  const tgChannels = channels.filter((ch) => ch.type === "telegram");
+
   const errors = validate(form);
   const blocked = Object.values(errors).some(Boolean) || !!schedErr;
   const set = (patch: Partial<EmailJobFormData>) => onChange({ ...form, ...patch });
@@ -423,9 +526,9 @@ export default function EmailJobForm({
             </Field>
           </Group>
 
-          {/* 执行方式：二选一必选其一 */}
+          {/* 执行方式：三选一必选其一 */}
           <Group title="执行方式（必选且只能选一种）">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {/* 选项 1：发送邮件 */}
               <button
                 type="button"
@@ -499,6 +602,44 @@ export default function EmailJobForm({
                 </div>
                 <p className="mt-2 text-xs text-fg-subtle leading-relaxed">
                   定时向目标服务器或 Webhook 发起 HTTP 请求，支持配置 Method、Headers 与 Body。
+                </p>
+              </button>
+
+              {/* 选项 3：推送微信ClawBot */}
+              <button
+                type="button"
+                onClick={() => set({ task_type: "clawbot" })}
+                className={cx(
+                  "relative flex flex-col items-start rounded-xl border p-4 text-left transition-all duration-fast",
+                  form.task_type === "clawbot"
+                    ? "border-primary bg-primary/8 text-fg shadow-xs ring-2 ring-primary/25"
+                    : "border-border bg-surface text-fg-muted hover:border-border-strong hover:text-fg"
+                )}
+              >
+                <div className="flex w-full items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={cx(
+                        "flex size-7 items-center justify-center rounded-lg",
+                        form.task_type === "clawbot"
+                          ? "bg-primary text-white"
+                          : "bg-panel text-fg-muted"
+                      )}
+                    >
+                      <Bot className="size-4" />
+                    </div>
+                    <span className="font-semibold text-sm text-fg">推送微信 ClawBot</span>
+                  </div>
+                  <input
+                    type="radio"
+                    name="task_type"
+                    checked={form.task_type === "clawbot"}
+                    onChange={() => set({ task_type: "clawbot" })}
+                    className="size-4 text-primary accent-primary"
+                  />
+                </div>
+                <p className="mt-2 text-xs text-fg-subtle leading-relaxed">
+                  拉取 TG 机器人未读消息，自动合并排版并通过 WxPusher 推送至微信，带防重游标机制。
                 </p>
               </button>
             </div>
@@ -639,6 +780,221 @@ export default function EmailJobForm({
                     )}
                   </div>
                 )}
+              </div>
+            </Group>
+          )}
+
+          {/* 当选择「推送微信ClawBot」时展示的配置项 */}
+          {form.task_type === "clawbot" && (
+            <Group title="微信 ClawBot 推送配置">
+              <div className="space-y-4">
+                {/* 1. Telegram 机器人数据源 */}
+                <div className="rounded-lg border border-border/80 bg-surface/40 p-3.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
+                      <Bot className="size-4 text-primary" />
+                      Telegram 机器人来源 (获取未读消息)
+                    </label>
+                    <span className="text-[11px] text-fg-subtle">
+                      自动调用 getUpdates 获取未读消息
+                    </span>
+                  </div>
+
+                  {tgChannels.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-3">
+                        <label className="inline-flex items-center gap-1.5 text-xs text-fg cursor-pointer">
+                          <input
+                            type="radio"
+                            name="tg_bot_mode"
+                            checked={
+                              form.tg_bot_token.startsWith("channel:") ||
+                              (!form.tg_bot_token && tgChannels.length > 0)
+                            }
+                            onChange={() => set({ tg_bot_token: `channel:${tgChannels[0].id}` })}
+                            className="size-3.5 text-primary accent-primary"
+                          />
+                          复用已有的 TG 告警频道
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 text-xs text-fg cursor-pointer">
+                          <input
+                            type="radio"
+                            name="tg_bot_mode"
+                            checked={!form.tg_bot_token.startsWith("channel:") && !!form.tg_bot_token}
+                            onChange={() => set({ tg_bot_token: "" })}
+                            className="size-3.5 text-primary accent-primary"
+                          />
+                          手动输入自定义 Bot Token
+                        </label>
+                      </div>
+
+                      {form.tg_bot_token.startsWith("channel:") || (!form.tg_bot_token && tgChannels.length > 0) ? (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={
+                              form.tg_bot_token.startsWith("channel:")
+                                ? form.tg_bot_token
+                                : `channel:${tgChannels[0].id}`
+                            }
+                            onChange={(e) => set({ tg_bot_token: e.target.value })}
+                            className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-medium text-fg focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                          >
+                            {tgChannels.map((ch) => (
+                              <option key={ch.id} value={`channel:${ch.id}`}>
+                                📢 {ch.name} (ID: {ch.id})
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            loading={testingTgBot}
+                            onClick={() => void handleTestTgBot()}
+                            icon={<RefreshCw className="size-3.5" />}
+                          >
+                            测试探测
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {(!form.tg_bot_token.startsWith("channel:") || tgChannels.length === 0) && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <Input
+                          placeholder="例如：123456789:AAHk... 或完整 Webhook URL"
+                          value={form.tg_bot_token}
+                          onChange={(e) => set({ tg_bot_token: e.target.value })}
+                          className="font-mono text-xs"
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          loading={testingTgBot}
+                          disabled={!form.tg_bot_token.trim()}
+                          onClick={() => void handleTestTgBot()}
+                          icon={<RefreshCw className="size-3.5" />}
+                        >
+                          测试探测
+                        </Button>
+                      </div>
+                      <p className="text-[11px] text-fg-subtle">
+                        可直接填入 Bot Token 或包含 token 的 Telegram API 地址。
+                      </p>
+                    </div>
+                  )}
+
+                  {err("tg_bot_token") && (
+                    <p className="text-xs text-danger">{err("tg_bot_token")}</p>
+                  )}
+
+                  {tgBotResult && (
+                    <div
+                      className={cx(
+                        "rounded-lg border p-2.5 text-xs flex items-center justify-between gap-2",
+                        tgBotResult.ok
+                          ? "border-success/30 bg-success/5 text-fg"
+                          : "border-danger/30 bg-danger/5 text-fg"
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        {tgBotResult.ok ? (
+                          <CircleCheck className="size-4 text-success shrink-0" />
+                        ) : (
+                          <CircleAlert className="size-4 text-danger shrink-0" />
+                        )}
+                        <span className="truncate">
+                          {tgBotResult.ok
+                            ? `连接成功：@${tgBotResult.bot?.username || "bot"} (${tgBotResult.bot?.first_name || ""})`
+                            : `连接失败：${tgBotResult.error}`}
+                        </span>
+                      </div>
+                      {tgBotResult.ok && (
+                        <span className="shrink-0 rounded bg-success/15 px-1.5 py-0.5 text-[11px] font-mono text-success">
+                          待消费未读：{tgBotResult.unreadCount ?? 0} 条
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. WxPusher 微信接收配置 */}
+                <div className="rounded-lg border border-border/80 bg-surface/40 p-3.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
+                      <MessageSquare className="size-4 text-primary" />
+                      WxPusher 接收用户 (微信端)
+                    </label>
+                    <span className="text-[11px] text-fg-subtle">
+                      推送格式：Markdown 排版 (contentType: 3)
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1">
+                        <Input
+                          placeholder="例如：UID_xxxxxx（多个 UID 用逗号或空格隔开）"
+                          value={form.wxpusher_uids}
+                          onChange={(e) => set({ wxpusher_uids: e.target.value })}
+                          className="font-mono text-xs"
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        loading={testingWxPusher}
+                        disabled={!form.wxpusher_uids.trim()}
+                        onClick={() => void handleTestWxPusher()}
+                        icon={<Send className="size-3.5" />}
+                      >
+                        测试发送微信
+                      </Button>
+                    </div>
+                    <p className="text-[11px] text-fg-subtle">
+                      微信关注「WxPusher」公众号回复「UID」即可查看个人 UID。全局 App Token 可点击顶部「WxPusher 微信设置」配置。
+                    </p>
+                  </div>
+
+                  {err("wxpusher_uids") && (
+                    <p className="text-xs text-danger">{err("wxpusher_uids")}</p>
+                  )}
+
+                  {wxPusherResult && (
+                    <div
+                      className={cx(
+                        "rounded-lg border p-2.5 text-xs flex items-center gap-1.5",
+                        wxPusherResult.ok
+                          ? "border-success/30 bg-success/5 text-success"
+                          : "border-danger/30 bg-danger/5 text-danger"
+                      )}
+                    >
+                      {wxPusherResult.ok ? (
+                        <CircleCheck className="size-4 shrink-0" />
+                      ) : (
+                        <CircleAlert className="size-4 shrink-0" />
+                      )}
+                      <span>{wxPusherResult.msg}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. 游标防重与排版机制说明 */}
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-fg-muted space-y-1 leading-relaxed">
+                  <div className="font-semibold text-fg flex items-center gap-1.5">
+                    <Sparkles className="size-3.5 text-primary" />
+                    已读游标与防重复推送机制说明
+                  </div>
+                  <p className="text-[11px] text-fg-subtle">
+                    • 每次执行定时任务时，调用 Telegram 的 <code>getUpdates</code> 接口（<code>offset = last_update_id + 1</code>）。<br />
+                    • 若抓取到多条新消息，将合并整理为结构清晰的 Markdown 格式一次性投递给指定的微信用户。<br />
+                    • <strong>只有在 WxPusher 成功返回后，游标才会前进</strong>，杜绝漏发并完全避免重复推送；若无新消息则静默跳过。
+                  </p>
+                </div>
               </div>
             </Group>
           )}
@@ -1066,6 +1422,17 @@ export default function EmailJobForm({
                 icon={<Play className="size-3.5" />}
               >
                 测试请求接口
+              </Button>
+            ) : form.task_type === "clawbot" ? (
+              <Button
+                type="button"
+                variant="secondary"
+                loading={testingWxPusher}
+                disabled={!form.wxpusher_uids.trim()}
+                onClick={() => void handleTestWxPusher()}
+                icon={<MessageSquare className="size-3.5" />}
+              >
+                测试微信推送
               </Button>
             ) : (
               <Button

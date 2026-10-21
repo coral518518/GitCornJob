@@ -11,7 +11,7 @@ export {
   // 领域
   GitBranch, Timer, ArrowRight, Inbox, KeyRound, LogOut, UserRound,
   Activity, BellRing, HeartPulse, Globe, Webhook, Mail, Send, FileText, Sparkles, History,
-  Eye, Code, Settings,
+  Eye, Code, Settings, Bot, MessageSquare,
 } from "lucide-react";
 export type { LucideIcon } from "lucide-react";
 

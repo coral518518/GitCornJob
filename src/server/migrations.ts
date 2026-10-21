@@ -194,6 +194,15 @@ const MIGRATIONS: Migration[] = [
       "ALTER TABLE email_jobs ADD COLUMN http_body TEXT",
     ],
   },
+  {
+    // 定时任务扩展：支持推送微信 ClawBot（WxPusher + Telegram getUpdates 轮询与游标防重）
+    id: 9,
+    name: "email-jobs-clawbot-support",
+    statements: [
+      "ALTER TABLE email_jobs ADD COLUMN wxpusher_uids TEXT",
+      "ALTER TABLE email_jobs ADD COLUMN tg_bot_token TEXT",
+    ],
+  },
 ];
 
 let migrated = false;

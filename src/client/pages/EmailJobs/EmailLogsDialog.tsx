@@ -17,6 +17,7 @@ export default function EmailLogsDialog({ open, job, onClose }: Props) {
   const [err, setErr] = useState("");
 
   const isHttp = job?.task_type === "http";
+  const isClawBot = job?.task_type === "clawbot";
 
   function loadLogs() {
     if (!job) return;
@@ -112,7 +113,28 @@ export default function EmailLogsDialog({ open, job, onClose }: Props) {
                 </div>
 
                 <div className="flex flex-col gap-0.5 pl-6 text-fg-muted">
-                  {isHttp || log.to_emails.startsWith("http") ? (
+                  {isClawBot || log.to_emails.startsWith("wxpusher:") ? (
+                    <>
+                      <div>
+                        <span className="text-fg-subtle">微信目标 UID：</span>
+                        <span className="font-mono text-fg break-all">
+                          {log.to_emails.replace(/^wxpusher:/, "") || "默认"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-fg-subtle">推送状态：</span>
+                        <span>{log.subject}</span>
+                      </div>
+                      {log.resend_id && (
+                        <div className="text-fg-subtle font-mono text-[11px]">
+                          <span>WxPusher 编号：</span>
+                          <span className={isSuccess ? "text-success font-semibold" : "text-danger font-semibold"}>
+                            {log.resend_id}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : isHttp || log.to_emails.startsWith("http") ? (
                     <>
                       <div>
                         <span className="text-fg-subtle">接口目标：</span>

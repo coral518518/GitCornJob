@@ -126,7 +126,7 @@ CREATE INDEX IF NOT EXISTS idx_heartbeats_time ON heartbeats(created_at);
 CREATE TABLE IF NOT EXISTS email_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  task_type TEXT NOT NULL DEFAULT 'email' CHECK (task_type IN ('email','http')),
+  task_type TEXT NOT NULL DEFAULT 'email' CHECK (task_type IN ('email','http','clawbot')),
   to_emails TEXT NOT NULL DEFAULT '',
   cc_emails TEXT,
   bcc_emails TEXT,
@@ -138,6 +138,9 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   http_method TEXT DEFAULT 'GET',
   http_headers TEXT,
   http_body TEXT,
+  -- 微信 ClawBot 配置（task_type = 'clawbot' 时生效）
+  wxpusher_uids TEXT,
+  tg_bot_token TEXT,
   schedule_json TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   next_run_at INTEGER NOT NULL,
@@ -146,7 +149,7 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   notify_channel_ids TEXT,
   fail_streak INTEGER NOT NULL DEFAULT 0,
   timezone TEXT,
-  -- 可选 Telegram 频道监控（多频道逗号/换行分隔、关键词过滤、最近 post_id 状态 JSON）
+  -- 可选 Telegram 频道监控 / 机器人状态（多频道逗号/换行分隔、关键词过滤、最近 update_id / post_id 状态 JSON）
   tg_channels TEXT,
   tg_keywords TEXT,
   tg_state_json TEXT,

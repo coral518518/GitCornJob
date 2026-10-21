@@ -23,6 +23,8 @@ export type Env = {
   RESEND_API_KEY?: string;
   /** Resend 发件人（可选，例如 系统通知 <noreply@yourdomain.com>） */
   RESEND_FROM?: string;
+  /** WxPusher App Token（可选，优选在管理后台设置存储于 settings 表） */
+  WXPUSHER_APP_TOKEN?: string;
 };
 
 export type AccountRow = {
@@ -125,7 +127,7 @@ export type ApiTokenRow = {
   updated_at: number;
 };
 
-export type TaskType = "email" | "http";
+export type TaskType = "email" | "http" | "clawbot";
 
 export type EmailJobRow = {
   id: number;
@@ -141,6 +143,8 @@ export type EmailJobRow = {
   http_method: string | null;
   http_headers: string | null;
   http_body: string | null;
+  wxpusher_uids: string | null;
+  tg_bot_token: string | null;
   schedule_json: string;
   enabled: number;
   next_run_at: number;

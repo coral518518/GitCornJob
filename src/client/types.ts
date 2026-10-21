@@ -198,7 +198,7 @@ export type Stats = {
   failed_email_24h?: number;
 };
 
-export type TaskType = "email" | "http";
+export type TaskType = "email" | "http" | "clawbot";
 
 export type EmailJob = {
   id: number;
@@ -214,6 +214,8 @@ export type EmailJob = {
   http_method: string | null;
   http_headers: string | null;
   http_body: string | null;
+  wxpusher_uids: string | null;
+  tg_bot_token: string | null;
   schedule_json: string;
   enabled: number;
   next_run_at: number;
@@ -249,6 +251,13 @@ export type ResendConfig = {
   apiKeysMasked: string[];
   from: string;
   replyTo: string;
+  source: "db" | "env" | "none";
+};
+
+export type WxPusherConfig = {
+  isConfigured: boolean;
+  appTokenMasked: string;
+  defaultUids: string;
   source: "db" | "env" | "none";
 };
 

@@ -1,8 +1,17 @@
 import { computeNextRun, validateSchedule } from "./schedule";
 import { getResendConfig, interpolateTemplate, parseEmailList, sendResendEmail } from "./email";
 import { checkTgChannelsForJob, formatTgEmail, parseTgChannels } from "./tg-monitor";
-import { getChannels, notifyEmailJobAutoPaused, notifyEmailJobFailed, sendNotify, type ChannelRow, type NotifyPayload } from "./notify";
+import { getChannel, getChannels, notifyEmailJobAutoPaused, notifyEmailJobFailed, sendNotify, type ChannelRow, type NotifyPayload } from "./notify";
 import { DEFAULT_RUN_RETENTION_DAYS, KEY_RUNS_RETENTION, getAutoPauseThreshold, getSetting, setSetting } from "./settings";
+import {
+  extractTgBotToken,
+  fetchTgBotUpdates,
+  formatTgUpdatesToMarkdown,
+  getWxPusherConfig,
+  parseWxPusherUids,
+  resolveTgBotToken,
+  sendWxPusherMessage,
+} from "./wxpusher";
 import type { EmailJobRow, Env } from "./types";
 
 export type TriggerSource = "schedule" | "manual";
@@ -228,12 +237,193 @@ export async function dispatchHttpJob(
   };
 }
 
+export async function dispatchClawBotJob(
+  env: Env,
+  job: EmailJobRow,
+  source: TriggerSource
+): Promise<EmailDispatchOutcome> {
+  const now = Date.now();
+
+  // 1. 获取 Telegram Bot Token（支持直接填 Token 或引用已有通知渠道）
+  let botToken = await resolveTgBotToken(job.tg_bot_token || "", env);
+
+  // 兜底：如果任务本身未指定 botToken，尝试从现有的 Telegram 告警渠道中自动借用第一个
+  if (!botToken) {
+    try {
+      const allChannels = await getChannels(env);
+      const tgChannel = allChannels.find((c) => c.type === "telegram");
+      if (tgChannel) {
+        botToken = extractTgBotToken(tgChannel.url);
+      }
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  if (!botToken) {
+    const msg = "未找到可用的 Telegram Bot Token，请在任务中选择或填写";
+    await recordEmailLog(env, job.id, source, "failed", null, "", "微信ClawBot推送失败", msg, 0);
+    return { ok: false, httpStatus: 400, error: msg, latencyMs: 0 };
+  }
+
+  // 2. 获取 WxPusher 配置与接收 UID
+  const wxConfig = await getWxPusherConfig(env);
+  if (!wxConfig.appToken) {
+    const msg = "未配置 WxPusher App Token，请点击「WxPusher 微信设置」进行配置";
+    await recordEmailLog(env, job.id, source, "failed", null, "", "微信ClawBot推送失败", msg, 0);
+    return { ok: false, httpStatus: 400, error: msg, latencyMs: 0 };
+  }
+
+  let uids = parseWxPusherUids(job.wxpusher_uids);
+  if (uids.length === 0) {
+    uids = parseWxPusherUids(wxConfig.defaultUids);
+  }
+  if (uids.length === 0) {
+    const msg = "未指定接收消息的 WxPusher UID（请在任务编辑中填写）";
+    await recordEmailLog(env, job.id, source, "failed", null, "", "微信ClawBot推送失败", msg, 0);
+    return { ok: false, httpStatus: 400, error: msg, latencyMs: 0 };
+  }
+
+  // 3. 读取已读游标防重复拉取
+  let lastUpdateId: number | undefined = undefined;
+  if (job.tg_state_json) {
+    try {
+      const st = JSON.parse(job.tg_state_json) as { lastUpdateId?: number };
+      if (typeof st.lastUpdateId === "number") {
+        lastUpdateId = st.lastUpdateId;
+      }
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  // 4. 调用 Telegram Bot API getUpdates 拉取未读更新
+  const offset = typeof lastUpdateId === "number" ? lastUpdateId + 1 : undefined;
+  const tgRes = await fetchTgBotUpdates(botToken, offset, 0);
+  if (!tgRes.ok) {
+    await recordEmailLog(
+      env,
+      job.id,
+      source,
+      "failed",
+      null,
+      uids.join(", "),
+      "微信ClawBot推送失败",
+      tgRes.error || "获取 Telegram 消息异常",
+      tgRes.latencyMs
+    );
+    return {
+      ok: false,
+      httpStatus: 502,
+      error: tgRes.error || "获取 Telegram 更新失败",
+      latencyMs: tgRes.latencyMs,
+    };
+  }
+
+  // 5. 无新消息则安全跳过本次推送
+  if (tgRes.updates.length === 0) {
+    // 免费层优化：仅在用户前端手动点击试跑时记录一条跳过日志，定时轮询不写 D1 避免日志膨胀
+    if (source === "manual") {
+      await recordEmailLog(
+        env,
+        job.id,
+        source,
+        "success",
+        "已跳过",
+        uids.join(", "),
+        "微信ClawBot推送（无新消息）",
+        "Telegram 机器人暂无新未读消息，安全跳过本次微信推送",
+        tgRes.latencyMs
+      );
+    }
+    return {
+      ok: true,
+      httpStatus: 200,
+      skipped: true,
+      skipReason: "Telegram 机器人暂无新未读消息（未触发推送）",
+      latencyMs: tgRes.latencyMs,
+    };
+  }
+
+  // 6. 有新消息：计算最大 update_id，排版为 Markdown 消息并推送到微信 WxPusher
+  const maxUpdateId = tgRes.updates.reduce((max, u) => Math.max(max, u.update_id), 0);
+  const formatted = formatTgUpdatesToMarkdown(tgRes.updates, job.timezone ?? undefined);
+
+  const pushRes = await sendWxPusherMessage({
+    appToken: wxConfig.appToken,
+    content: formatted.content,
+    summary: formatted.summary,
+    uids,
+  });
+
+  const totalLatency = tgRes.latencyMs + pushRes.latencyMs;
+
+  if (!pushRes.ok) {
+    const errMsg = `WxPusher 推送失败: ${pushRes.msg || "未知原因"}`;
+    await recordEmailLog(
+      env,
+      job.id,
+      source,
+      "failed",
+      pushRes.code ? `CODE ${pushRes.code}` : null,
+      uids.join(", "),
+      `推送 ${tgRes.updates.length} 条未读消息失败`,
+      errMsg,
+      totalLatency
+    );
+    // 关键防丢机制：推送失败时绝不更新游标，确保下一次轮询仍能重新拉取未读消息进行重推
+    return {
+      ok: false,
+      httpStatus: 502,
+      error: errMsg,
+      latencyMs: totalLatency,
+    };
+  }
+
+  // 7. 推送成功：更新数据库已读游标与执行状态
+  await env.DB.prepare("UPDATE email_jobs SET tg_state_json=? WHERE id=?")
+    .bind(
+      JSON.stringify({
+        lastUpdateId: maxUpdateId,
+        lastPushedAt: now,
+        lastCount: tgRes.updates.length,
+      }),
+      job.id
+    )
+    .run();
+
+  await recordEmailLog(
+    env,
+    job.id,
+    source,
+    "success",
+    "WxPusher 成功",
+    uids.join(", "),
+    `推送 ${tgRes.updates.length} 条 Telegram 消息至微信`,
+    null,
+    totalLatency
+  );
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    resendId: "WxPusher 成功",
+    latencyMs: totalLatency,
+    postCount: tgRes.updates.length,
+  };
+}
+
 export async function dispatchEmailJob(
   env: Env,
   job: EmailJobRow,
   source: TriggerSource,
   cachedConfig?: { apiKey: string; apiKeys?: string[]; from: string; replyTo?: string }
 ): Promise<EmailDispatchOutcome> {
+  // 如果任务类型为微信 ClawBot 推送，分发至 ClawBot 执行器
+  if (job.task_type === "clawbot") {
+    return dispatchClawBotJob(env, job, source);
+  }
+
   // 如果任务类型为 HTTP 定时接口请求，分发至 HTTP 执行器
   if (job.task_type === "http") {
     return dispatchHttpJob(env, job, source);
