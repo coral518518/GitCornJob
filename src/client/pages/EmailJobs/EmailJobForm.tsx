@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { errText, post } from "../../api";
+import { useToast } from "../../components/Toast";
 import type { Channel, Schedule, TaskType } from "../../types";
 import { CHANNEL_TYPE_LABEL } from "../../types";
 import { Badge, Button, Checkbox, Field, Input, Segmented, Switch, Textarea, useConfirm } from "../../ui";
@@ -96,7 +97,7 @@ const ALL_TOUCHED: Record<Key, boolean> = {
   tg_bot_token: true,
 };
 
-function validate(f: EmailJobFormData): Record<Key, string | null> {
+function validate(f: EmailJobFormData, channels: Channel[] = []): Record<Key, string | null> {
   const nameErr = f.name.trim() ? null : "任务名不能为空";
 
   if (f.task_type === "http") {
@@ -119,7 +120,10 @@ function validate(f: EmailJobFormData): Record<Key, string | null> {
   }
 
   if (f.task_type === "clawbot") {
-    const tgErr = f.tg_bot_token.trim() ? null : "请选择或输入 Telegram Bot Token";
+    const tgChannels = channels.filter((c) => c.type === "telegram");
+    // 如果存在已配置的 TG 告警频道，未填写时自动回退复用首个频道，不拦截报错
+    const effectiveToken = f.tg_bot_token.trim() || (tgChannels.length > 0 ? `channel:${tgChannels[0].id}` : "");
+    const tgErr = effectiveToken ? null : "请选择或输入 Telegram Bot Token";
     const wxErr = f.wxpusher_uids.trim() ? null : "请输入微信接收用户的 WxPusher UID";
     return {
       name: nameErr,
@@ -216,6 +220,7 @@ export default function EmailJobForm({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const confirm = useConfirm();
+  const toast = useToast();
 
   const [touched, setTouched] = useState<Partial<Record<Key, boolean>>>({});
   const [schedErr, setSchedErr] = useState<string | null>(null);
@@ -382,7 +387,12 @@ export default function EmailJobForm({
   }
 
   async function handleTestTgBot() {
-    if (!form.tg_bot_token.trim()) return;
+    const tokenToTest =
+      form.tg_bot_token.trim() || (tgChannels.length > 0 ? `channel:${tgChannels[0].id}` : "");
+    if (!tokenToTest) {
+      toast("请先选择或输入 Telegram Bot Token", "err");
+      return;
+    }
     setTestingTgBot(true);
     setTgBotResult(null);
     try {
@@ -392,7 +402,7 @@ export default function EmailJobForm({
         unreadCount: number;
         error?: string;
       }>("/api/email-jobs/test-tg-bot", {
-        token: form.tg_bot_token,
+        token: tokenToTest,
       });
       setTgBotResult(res);
     } catch (e) {
@@ -434,7 +444,7 @@ export default function EmailJobForm({
 
   const tgChannels = channels.filter((ch) => ch.type === "telegram");
 
-  const errors = validate(form);
+  const errors = validate(form, channels);
   const blocked = Object.values(errors).some(Boolean) || !!schedErr;
   const set = (patch: Partial<EmailJobFormData>) => onChange({ ...form, ...patch });
   const touch = (k: Key) => () => setTouched((t) => ({ ...t, [k]: true }));
@@ -463,7 +473,29 @@ export default function EmailJobForm({
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setTouched(ALL_TOUCHED);
-    if (blocked || notifyError) return;
+
+    let submitForm = form;
+    // 微信 ClawBot：若用户保留默认选择而未主动触碰下拉框，确保 tg_bot_token 有效赋值
+    if (form.task_type === "clawbot" && !form.tg_bot_token.trim() && tgChannels.length > 0) {
+      submitForm = { ...form, tg_bot_token: `channel:${tgChannels[0].id}` };
+      onChange(submitForm);
+    }
+
+    const currentErrors = validate(submitForm, channels);
+    const firstError = Object.values(currentErrors).find(Boolean);
+    if (firstError) {
+      toast(`请完善任务信息：${firstError}`, "err");
+      return;
+    }
+    if (schedErr) {
+      toast(`调度配置有误：${schedErr}`, "err");
+      return;
+    }
+    if (notifyError) {
+      toast(`通知配置有误：${notifyError}`, "err");
+      return;
+    }
+
     onSubmit();
   }
 
@@ -608,7 +640,12 @@ export default function EmailJobForm({
               {/* 选项 3：推送微信ClawBot */}
               <button
                 type="button"
-                onClick={() => set({ task_type: "clawbot" })}
+                onClick={() =>
+                  set({
+                    task_type: "clawbot",
+                    tg_bot_token: form.tg_bot_token || (tgChannels.length > 0 ? `channel:${tgChannels[0].id}` : ""),
+                  })
+                }
                 className={cx(
                   "relative flex flex-col items-start rounded-xl border p-4 text-left transition-all duration-fast",
                   form.task_type === "clawbot"
@@ -807,10 +844,7 @@ export default function EmailJobForm({
                           <input
                             type="radio"
                             name="tg_bot_mode"
-                            checked={
-                              form.tg_bot_token.startsWith("channel:") ||
-                              (!form.tg_bot_token && tgChannels.length > 0)
-                            }
+                            checked={form.tg_bot_token.startsWith("channel:") || !form.tg_bot_token}
                             onChange={() => set({ tg_bot_token: `channel:${tgChannels[0].id}` })}
                             className="size-3.5 text-primary accent-primary"
                           />
@@ -828,7 +862,7 @@ export default function EmailJobForm({
                         </label>
                       </div>
 
-                      {form.tg_bot_token.startsWith("channel:") || (!form.tg_bot_token && tgChannels.length > 0) ? (
+                      {(form.tg_bot_token.startsWith("channel:") || !form.tg_bot_token) && (
                         <div className="flex items-center gap-2">
                           <select
                             value={
@@ -856,11 +890,11 @@ export default function EmailJobForm({
                             测试探测
                           </Button>
                         </div>
-                      ) : null}
+                      )}
                     </div>
                   )}
 
-                  {(!form.tg_bot_token.startsWith("channel:") || tgChannels.length === 0) && (
+                  {(!form.tg_bot_token.startsWith("channel:") && (form.tg_bot_token !== "" || tgChannels.length === 0)) && (
                     <div className="space-y-1.5">
                       <div className="flex items-center gap-2">
                         <Input
@@ -1408,6 +1442,14 @@ export default function EmailJobForm({
             </div>
           </Group>
         </div>
+
+        {/* 表单未填项警示 */}
+        {Object.values(errors).some(Boolean) && Object.keys(touched).length > 0 && (
+          <div className="mx-6 mb-2 rounded-lg border border-danger/30 bg-danger/10 px-4 py-2.5 text-xs text-danger flex items-center gap-2">
+            <CircleAlert className="size-4 shrink-0" />
+            <span>无法保存：{Object.values(errors).find(Boolean)}</span>
+          </div>
+        )}
 
         {/* 底部固定操作栏 */}
         <div className="flex shrink-0 items-center justify-between border-t border-border bg-panel px-6 py-3.5">
