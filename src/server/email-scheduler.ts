@@ -51,12 +51,194 @@ function emailJobNotifyTargets(job: EmailJobRow, channels: ChannelRow[]): Channe
   }
 }
 
+export function parseHttpHeaders(headersStr?: string | null): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!headersStr || !headersStr.trim()) return result;
+  const trimmed = headersStr.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+          result[k.trim()] = String(v);
+        }
+      }
+      return result;
+    } catch {
+      /* fallback to line parsing */
+    }
+  }
+  for (const line of trimmed.split("\n")) {
+    const l = line.trim();
+    if (!l || l.startsWith("#") || l.startsWith("//")) continue;
+    const colonIdx = l.indexOf(":");
+    if (colonIdx > 0) {
+      const key = l.slice(0, colonIdx).trim();
+      const val = l.slice(colonIdx + 1).trim();
+      if (key) result[key] = val;
+    }
+  }
+  return result;
+}
+
+export async function executeHttpRequest(opts: {
+  url: string;
+  method?: string;
+  headers?: string | Record<string, string> | null;
+  body?: string | null;
+  timeoutMs?: number;
+}): Promise<{
+  ok: boolean;
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  latencyMs: number;
+  bodyPreview: string;
+  error?: string;
+}> {
+  const method = (opts.method || "GET").toUpperCase();
+  const start = Date.now();
+  const timeoutMs = opts.timeoutMs ?? 15000;
+
+  let headerObj: Record<string, string> = {};
+  if (typeof opts.headers === "object" && opts.headers !== null) {
+    headerObj = opts.headers;
+  } else if (typeof opts.headers === "string") {
+    headerObj = parseHttpHeaders(opts.headers);
+  }
+
+  // 非 GET/HEAD 且有 body 时，若为 JSON 格式且未显式指定 Content-Type，默认补齐 application/json
+  if (
+    opts.body &&
+    method !== "GET" &&
+    method !== "HEAD" &&
+    !Object.keys(headerObj).some((k) => k.toLowerCase() === "content-type")
+  ) {
+    const trimmedBody = opts.body.trim();
+    if (
+      (trimmedBody.startsWith("{") && trimmedBody.endsWith("}")) ||
+      (trimmedBody.startsWith("[") && trimmedBody.endsWith("]"))
+    ) {
+      headerObj["Content-Type"] = "application/json";
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const reqInit: RequestInit = {
+      method,
+      headers: headerObj,
+      signal: controller.signal,
+      redirect: "follow",
+    };
+    if (method !== "GET" && method !== "HEAD" && opts.body !== undefined && opts.body !== null) {
+      reqInit.body = opts.body;
+    }
+
+    const res = await fetch(opts.url, reqInit);
+    clearTimeout(timer);
+    const latencyMs = Date.now() - start;
+
+    const resHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      resHeaders[k] = v;
+    });
+
+    let resBody = "";
+    try {
+      resBody = await res.text();
+    } catch {
+      resBody = "";
+    }
+    const bodyPreview = resBody.slice(0, 500);
+
+    const isSuccess = res.ok; // 状态码 200..299 判定为成功
+    return {
+      ok: isSuccess,
+      status: res.status,
+      statusText: res.statusText || (isSuccess ? "OK" : "Error"),
+      headers: resHeaders,
+      latencyMs,
+      bodyPreview,
+      error: isSuccess ? undefined : `HTTP ${res.status} ${res.statusText || ""}: ${bodyPreview.slice(0, 150)}`.trim(),
+    };
+  } catch (err: unknown) {
+    const latencyMs = Date.now() - start;
+    const msg = (err as Error)?.name === "AbortError"
+      ? `请求超时（超过 ${timeoutMs}ms）`
+      : ((err as Error)?.message || "网络请求异常");
+    return {
+      ok: false,
+      status: 0,
+      statusText: "FetchError",
+      headers: {},
+      latencyMs,
+      bodyPreview: "",
+      error: msg,
+    };
+  }
+}
+
+export async function dispatchHttpJob(
+  env: Env,
+  job: EmailJobRow,
+  source: TriggerSource
+): Promise<EmailDispatchOutcome> {
+  const now = Date.now();
+  if (!job.http_url || !job.http_url.trim()) {
+    const msg = "未配置目标接口 URL";
+    await recordEmailLog(env, job.id, source, "failed", null, "", "HTTP 请求失败", msg, 0);
+    return { ok: false, httpStatus: 400, error: msg, latencyMs: 0 };
+  }
+
+  const finalUrl = interpolateTemplate(job.http_url.trim(), now, job.timezone);
+  const finalHeaders = job.http_headers ? interpolateTemplate(job.http_headers, now, job.timezone) : null;
+  const finalBody = job.http_body ? interpolateTemplate(job.http_body, now, job.timezone) : null;
+  const method = (job.http_method || "GET").toUpperCase();
+
+  const res = await executeHttpRequest({
+    url: finalUrl,
+    method,
+    headers: finalHeaders,
+    body: finalBody,
+    timeoutMs: 15000,
+  });
+
+  const subjectStr = `${method} ${finalUrl}`;
+  await recordEmailLog(
+    env,
+    job.id,
+    source,
+    res.ok ? "success" : "failed",
+    res.status > 0 ? `HTTP ${res.status}` : null,
+    finalUrl,
+    subjectStr,
+    res.ok ? null : res.error ?? "请求接口失败",
+    res.latencyMs
+  );
+
+  return {
+    ok: res.ok,
+    httpStatus: res.status || 502,
+    resendId: res.status > 0 ? `HTTP ${res.status}` : undefined,
+    error: res.error,
+    latencyMs: res.latencyMs,
+  };
+}
+
 export async function dispatchEmailJob(
   env: Env,
   job: EmailJobRow,
   source: TriggerSource,
   cachedConfig?: { apiKey: string; apiKeys?: string[]; from: string; replyTo?: string }
 ): Promise<EmailDispatchOutcome> {
+  // 如果任务类型为 HTTP 定时接口请求，分发至 HTTP 执行器
+  if (job.task_type === "http") {
+    return dispatchHttpJob(env, job, source);
+  }
+
   const config = cachedConfig ?? (await getResendConfig(env));
   if (!config.apiKey && (!config.apiKeys || config.apiKeys.length === 0)) {
     const msg = "未配置 Resend API Key，请在「邮件设置」中配置";
@@ -274,8 +456,8 @@ export async function runDueEmailJobs(
           notifications.push({
             channels: jobChannels,
             payload: paused
-              ? notifyEmailJobAutoPaused({ name: job.name, error: result.error })
-              : notifyEmailJobFailed({ name: job.name, error: result.error }),
+              ? notifyEmailJobAutoPaused({ name: job.name, error: result.error, taskType: job.task_type })
+              : notifyEmailJobFailed({ name: job.name, error: result.error, taskType: job.task_type }),
           });
         }
       }

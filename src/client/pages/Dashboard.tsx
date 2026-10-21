@@ -36,13 +36,13 @@ const CARDS: StatCard[] = [
   { key: "accounts", label: "账号", icon: <Users className="size-4" />, to: () => "/accounts" },
   { key: "total_jobs", label: "任务", icon: <Timer className="size-4" />, to: () => "/jobs",
     sub: s => `启用 ${s.enabled_jobs} / ${s.total_jobs}` },
-  { key: "total_email_jobs", label: "定时邮件", icon: <Mail className="size-4" />, to: () => "/emails",
+  { key: "total_email_jobs", label: "定时任务", icon: <Clock className="size-4" />, to: () => "/emails",
     value: s => s.total_email_jobs ?? 0,
     sub: s => {
       const today = s.today_email_sent ?? 0;
       const failed = s.failed_email_24h ?? 0;
-      if (failed > 0) return `今日已发 ${today} (失败 ${failed})`;
-      return `启用 ${s.enabled_email_jobs ?? 0} · 今日发 ${today}`;
+      if (failed > 0) return `今日执行 ${today} (失败 ${failed})`;
+      return `启用 ${s.enabled_email_jobs ?? 0} · 今日执行 ${today}`;
     },
     subDanger: s => (s.failed_email_24h ?? 0) > 0,
     tint: s => (s.failed_email_24h ?? 0) > 0,

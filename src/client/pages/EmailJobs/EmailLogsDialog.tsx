@@ -16,6 +16,8 @@ export default function EmailLogsDialog({ open, job, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
+  const isHttp = job?.task_type === "http";
+
   function loadLogs() {
     if (!job) return;
     setLoading(true);
@@ -38,7 +40,7 @@ export default function EmailLogsDialog({ open, job, onClose }: Props) {
     <Dialog
       open={open}
       onClose={onClose}
-      title={job ? `「${job.name}」发信历史记录` : "发信历史记录"}
+      title={job ? `「${job.name}」运行历史记录` : "运行历史记录"}
       width="max-w-2xl"
       footer={
         <div className="flex w-full items-center justify-between">
@@ -72,9 +74,9 @@ export default function EmailLogsDialog({ open, job, onClose }: Props) {
       ) : logs === null || logs.length === 0 ? (
         <div className="py-12 text-center">
           <Clock className="mx-auto size-8 text-fg-subtle" />
-          <p className="mt-2 text-sm text-fg-muted">暂无发信记录</p>
+          <p className="mt-2 text-sm text-fg-muted">暂无运行记录</p>
           <p className="mt-1 text-xs text-fg-subtle">
-            任务执行或手动试发后，发信日志将记录在此处。
+            任务执行或手动试跑后，运行日志将自动记录在此处。
           </p>
         </div>
       ) : (
@@ -94,13 +96,13 @@ export default function EmailLogsDialog({ open, job, onClose }: Props) {
                       <CircleX className="size-4 text-danger" />
                     )}
                     <span className="font-medium text-fg">
-                      {isSuccess ? "发送成功" : "发送失败"}
+                      {isSuccess ? "执行成功" : "执行失败"}
                     </span>
                     <Badge tone="neutral">
                       {log.source === "manual" ? "手动触发" : "定时调度"}
                     </Badge>
                     {log.latency_ms !== null && log.latency_ms > 0 && (
-                      <span className="text-fg-subtle tabular-nums">{log.latency_ms}ms</span>
+                      <span className="text-fg-subtle tabular-nums font-mono">{log.latency_ms}ms</span>
                     )}
                   </div>
                   <div className="flex items-center gap-2 text-fg-subtle">
@@ -110,23 +112,42 @@ export default function EmailLogsDialog({ open, job, onClose }: Props) {
                 </div>
 
                 <div className="flex flex-col gap-0.5 pl-6 text-fg-muted">
-                  <div>
-                    <span className="text-fg-subtle">收件人：</span>
-                    <span className="font-mono text-fg">{log.to_emails}</span>
-                  </div>
-                  <div>
-                    <span className="text-fg-subtle">标题：</span>
-                    <span>{log.subject}</span>
-                  </div>
-                  {log.resend_id && (
-                    <div className="text-fg-subtle">
-                      <span>Resend ID：</span>
-                      <span className="font-mono">{log.resend_id}</span>
-                    </div>
+                  {isHttp || log.to_emails.startsWith("http") ? (
+                    <>
+                      <div>
+                        <span className="text-fg-subtle">接口目标：</span>
+                        <span className="font-mono text-fg break-all">{log.to_emails || log.subject}</span>
+                      </div>
+                      {log.resend_id && (
+                        <div className="text-fg-subtle font-mono">
+                          <span>状态返回：</span>
+                          <span className={isSuccess ? "text-success font-semibold" : "text-danger font-semibold"}>
+                            {log.resend_id}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <span className="text-fg-subtle">收件人：</span>
+                        <span className="font-mono text-fg">{log.to_emails}</span>
+                      </div>
+                      <div>
+                        <span className="text-fg-subtle">邮件标题：</span>
+                        <span>{log.subject}</span>
+                      </div>
+                      {log.resend_id && (
+                        <div className="text-fg-subtle">
+                          <span>Resend ID：</span>
+                          <span className="font-mono">{log.resend_id}</span>
+                        </div>
+                      )}
+                    </>
                   )}
                   {log.error_message && (
-                    <div className="rounded bg-danger/10 p-1.5 text-danger">
-                      <span>错误：{log.error_message}</span>
+                    <div className="mt-1 rounded bg-danger/10 p-2 text-danger font-mono text-[11px] break-all">
+                      <span>失败详情：{log.error_message}</span>
                     </div>
                   )}
                 </div>

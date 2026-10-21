@@ -4,7 +4,7 @@ import PageHeader from "../../components/PageHeader";
 import { useToast } from "../../components/Toast";
 import type { Channel, EmailJob, ResendConfig } from "../../types";
 import { Button, EmptyState, Input, Segmented, SkeletonCard, useConfirm } from "../../ui";
-import { CircleAlert, Inbox, Mail, Plus, Settings } from "../../ui/icons";
+import { CircleAlert, Clock, Mail, Plus, Settings } from "../../ui/icons";
 import { useAlive } from "../../utils/useAlive";
 import { useAutoRefresh } from "../../utils/useAutoRefresh";
 import ResendConfigDialog from "../../components/ResendConfigDialog";
@@ -32,6 +32,7 @@ export default function EmailJobs() {
   // 过滤状态
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "enabled" | "disabled">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "email" | "http">("all");
 
   const alive = useAlive();
 
@@ -64,7 +65,7 @@ export default function EmailJobs() {
     loadData();
   }, []);
 
-  // 免费层优化：60s 周期，且抽屉/弹窗打开时暂停轮询；轮询只刷新任务列表，避免重复请求配置与渠道
+  // 免费层优化：60s 周期，且弹窗打开时暂停轮询；轮询只刷新任务列表，避免重复请求配置与渠道
   useAutoRefresh(reloadJobs, 60_000, !form && !logsJob && !configOpen);
 
   function openCreate() {
@@ -77,12 +78,13 @@ export default function EmailJobs() {
     const f: EmailJobFormData = {
       id: job.id,
       name: job.name,
-      to_emails: job.to_emails,
+      task_type: job.task_type || "email",
+      to_emails: job.to_emails || "",
       cc_emails: job.cc_emails || "",
       bcc_emails: job.bcc_emails || "",
-      subject: job.subject,
-      content: job.content,
-      content_type: job.content_type,
+      subject: job.subject || "",
+      content: job.content || "",
+      content_type: job.content_type || "markdown",
       schedule: parseSchedule(job.schedule_json),
       notify: job.notify,
       channelIds: job.notify_channel_ids ? JSON.parse(job.notify_channel_ids) : null,
@@ -90,6 +92,10 @@ export default function EmailJobs() {
       tg_enabled: !!(job.tg_channels && job.tg_channels.trim()),
       tg_channels: job.tg_channels || "",
       tg_keywords: job.tg_keywords || "",
+      http_url: job.http_url || "",
+      http_method: job.http_method || "GET",
+      http_headers: job.http_headers || "",
+      http_body: job.http_body || "",
     };
     setForm(f);
     setSnapshot(f);
@@ -116,10 +122,15 @@ export default function EmailJobs() {
   }
 
   async function handleTrigger(job: EmailJob) {
+    const isHttp = job.task_type === "http";
+    const targetDesc = isHttp
+      ? `请求「${job.http_method || "GET"} ${job.http_url}」`
+      : `投递至「${job.to_emails}」`;
+
     const ok = await confirm({
-      title: "立即发送邮件",
-      description: `确定立即向「${job.to_emails}」执行一次「${job.name}」吗？${
-        job.tg_channels ? "（已关联 Telegram 监控，有新消息时才发信）" : ""
+      title: isHttp ? "立即请求目标接口" : "立即发送邮件",
+      description: `确定立即执行一次「${job.name}」（${targetDesc}）吗？${
+        !isHttp && job.tg_channels ? "（已关联 Telegram 监控，有新消息时才发信）" : ""
       }`,
       confirmText: "立即执行",
     });
@@ -134,13 +145,13 @@ export default function EmailJobs() {
         toast(`执行完成：${res.skipReason || "暂无新消息，跳过发信"}`, "ok");
       } else {
         toast(
-          `「${job.name}」已成功触发发送！${typeof res.postCount === "number" ? `包含 ${res.postCount} 条新消息` : ""}`,
+          `「${job.name}」已成功触发执行！${typeof res.postCount === "number" ? `包含 ${res.postCount} 条新消息` : ""}`,
           "ok"
         );
       }
       await loadData();
     } catch (e) {
-      toast(`发送失败：${errText(e)}`, "err");
+      toast(`执行失败：${errText(e)}`, "err");
     } finally {
       setTriggeringId(null);
     }
@@ -148,8 +159,8 @@ export default function EmailJobs() {
 
   async function handleDelete(job: EmailJob) {
     const ok = await confirm({
-      title: "删除邮件任务",
-      description: `确定删除定时邮件「${job.name}」吗？其发信日志也将一并清除，此操作不可恢复。`,
+      title: "删除定时任务",
+      description: `确定删除定时任务「${job.name}」吗？其运行历史日志也将一并清除，此操作不可恢复。`,
       confirmText: "删除",
       tone: "danger",
     });
@@ -170,12 +181,17 @@ export default function EmailJobs() {
     try {
       const payload = {
         name: form.name.trim(),
+        task_type: form.task_type,
         to_emails: form.to_emails.trim(),
         cc_emails: form.cc_emails.trim() || undefined,
         bcc_emails: form.bcc_emails.trim() || undefined,
         subject: form.subject.trim(),
         content: form.content.trim(),
         content_type: form.content_type,
+        http_url: form.http_url.trim() || undefined,
+        http_method: form.http_method || undefined,
+        http_headers: form.http_headers.trim() || undefined,
+        http_body: form.http_body || undefined,
         schedule: form.schedule,
         notify: form.notify,
         notify_channel_ids: form.channelIds,
@@ -200,7 +216,7 @@ export default function EmailJobs() {
     }
   }
 
-  async function handleTestSendInDrawer() {
+  async function handleTestSendInModal() {
     if (!form) return;
     setTestingSend(true);
     try {
@@ -223,20 +239,24 @@ export default function EmailJobs() {
   const filtered = (list ?? []).filter((j) => {
     if (statusFilter === "enabled" && j.enabled !== 1) return false;
     if (statusFilter === "disabled" && j.enabled === 1) return false;
+    if (typeFilter === "email" && j.task_type !== "email") return false;
+    if (typeFilter === "http" && j.task_type !== "http") return false;
+
     if (!search.trim()) return true;
     const q = search.toLowerCase();
     return (
       j.name.toLowerCase().includes(q) ||
-      j.to_emails.toLowerCase().includes(q) ||
-      j.subject.toLowerCase().includes(q)
+      (j.to_emails && j.to_emails.toLowerCase().includes(q)) ||
+      (j.subject && j.subject.toLowerCase().includes(q)) ||
+      (j.http_url && j.http_url.toLowerCase().includes(q))
     );
   });
 
   return (
     <div>
       <PageHeader
-        title="定时邮件"
-        description="基于 Resend 发信服务的定时邮件派发任务，支持 Cron 与间隔规则、动态模板插值与发送历史追溯。"
+        title="定时任务"
+        description="支持定时发送邮件（支持 Telegram 频道监控更新推送）与定时调用 HTTP 接口任务，支持 Cron 表达式、时区与运行历史追溯。"
         action={
           <div className="flex items-center gap-2">
             <Button
@@ -251,7 +271,7 @@ export default function EmailJobs() {
               onClick={openCreate}
               icon={<Plus className="size-4" />}
             >
-              新建邮件任务
+              新建定时任务
             </Button>
           </div>
         }
@@ -261,7 +281,7 @@ export default function EmailJobs() {
         <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn">
           <div className="flex items-center gap-2">
             <CircleAlert className="size-4 shrink-0" />
-            <span>尚未配置 Resend API Key，发信任务将无法执行。请先完成邮件服务配置。</span>
+            <span>提示：尚未配置 Resend API Key，若需执行「邮件发送」类定时任务请先完成配置。HTTP 接口任务不受影响。</span>
           </div>
           <Button size="sm" variant="secondary" onClick={() => setConfigOpen(true)}>
             前往配置
@@ -270,9 +290,19 @@ export default function EmailJobs() {
       )}
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2.5">
           <Segmented
-            label="状态过滤"
+            label="类型筛选"
+            value={typeFilter}
+            options={[
+              { value: "all", label: "全部类型" },
+              { value: "email", label: "邮件" },
+              { value: "http", label: "HTTP 接口" },
+            ]}
+            onChange={(v) => setTypeFilter(v as "all" | "email" | "http")}
+          />
+          <Segmented
+            label="状态筛选"
             value={statusFilter}
             options={[
               { value: "all", label: `全部 (${list?.length ?? 0})` },
@@ -284,7 +314,7 @@ export default function EmailJobs() {
         </div>
         <div className="w-full sm:w-64">
           <Input
-            placeholder="搜索任务名、收件人或主题…"
+            placeholder="搜索任务名、URL、收件人或标题…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -299,17 +329,17 @@ export default function EmailJobs() {
         </div>
       ) : filtered.length === 0 ? (
         <EmptyState
-          icon={<Mail className="size-8" />}
-          title={search ? "未匹配到任何邮件任务" : "暂无定时邮件任务"}
+          icon={<Clock className="size-8" />}
+          title={search ? "未匹配到任何定时任务" : "暂无定时任务"}
           description={
             search
               ? "尝试更改搜索关键字或状态筛选条件"
-              : "创建您的第一个定时邮件任务，定时向指定邮箱发送提醒、报表或通知。"
+              : "创建您的第一个定时任务，支持定时请求 HTTP 接口或定时发送邮件。"
           }
           action={
             !search && (
               <Button variant="primary" onClick={openCreate} icon={<Plus className="size-4" />}>
-                新建邮件任务
+                新建定时任务
               </Button>
             )
           }
@@ -342,7 +372,7 @@ export default function EmailJobs() {
           onChange={setForm}
           onClose={() => setForm(null)}
           onSubmit={handleFormSubmit}
-          onTestSend={handleTestSendInDrawer}
+          onTestSend={handleTestSendInModal}
         />
       )}
 

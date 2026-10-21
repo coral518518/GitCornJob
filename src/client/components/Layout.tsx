@@ -4,7 +4,7 @@ import { get, post } from "../api";
 import type { Stats } from "../types";
 import { Menu } from "../ui";
 import {
-  BellRing, ChevronDown, HeartPulse, KeyRound, LayoutDashboard, LogOut, Mail, Menu as MenuIcon, ScrollText, Timer, UserRound, Users, Webhook, X,
+  BellRing, ChevronDown, Clock, HeartPulse, KeyRound, LayoutDashboard, LogOut, Mail, Menu as MenuIcon, ScrollText, Timer, UserRound, Users, Webhook, X,
   type LucideIcon,
 } from "../ui/icons";
 import { cx, focusRing } from "../ui/styles";
@@ -24,8 +24,8 @@ type Link = {
 const LINKS: Link[] = [
   { to: "/", label: "仪表盘", end: true, Icon: LayoutDashboard },
   { to: "/accounts", label: "账号", end: false, Icon: Users, count: "accounts" },
-  { to: "/jobs", label: "任务", end: false, Icon: Timer, count: "total_jobs" },
-  { to: "/emails", label: "定时邮件", end: false, Icon: Mail, count: "total_email_jobs" },
+  { to: "/jobs", label: "定时GithubAction", end: false, Icon: Timer, count: "total_jobs" },
+  { to: "/emails", label: "定时任务", end: false, Icon: Clock, count: "total_email_jobs" },
   { to: "/monitors", label: "监控", end: false, Icon: HeartPulse, count: "total_monitors" },
   { to: "/runs", label: "运行记录", end: false, Icon: ScrollText },
 ];

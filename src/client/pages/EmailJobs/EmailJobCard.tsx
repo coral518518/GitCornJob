@@ -1,5 +1,18 @@
 import { Badge, Card, Switch, iconActionDanger, iconActionInfo, iconActionSuccess } from "../../ui";
-import { ArrowRight, CircleCheck, CircleX, Clock, History, LoaderCircle, Mail, Pencil, Play, Timer, Trash2 } from "../../ui/icons";
+import {
+  ArrowRight,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Globe,
+  History,
+  LoaderCircle,
+  Mail,
+  Pencil,
+  Play,
+  Timer,
+  Trash2,
+} from "../../ui/icons";
 import type { EmailJob } from "../../types";
 import { fmtShort, fmtShortTz, relativeTime } from "../../utils/time";
 import { describeLocal, displayTzOf, parseSchedule } from "../Jobs/schedule";
@@ -26,6 +39,22 @@ export default function EmailJobCard({
   const scheduleJson = parseSchedule(job.schedule_json);
   const schedule = describeLocal(scheduleJson, job.timezone);
   const dTz = displayTzOf(scheduleJson, job.timezone);
+  const isHttp = job.task_type === "http";
+
+  const methodTone = (m: string): "neutral" | "success" | "warn" | "danger" => {
+    switch (m.toUpperCase()) {
+      case "GET":
+        return "success";
+      case "POST":
+      case "PUT":
+      case "PATCH":
+        return "warn";
+      case "DELETE":
+        return "danger";
+      default:
+        return "neutral";
+    }
+  };
 
   return (
     <Card className="flex flex-col gap-2.5 p-4 transition-colors duration-fast ease-smooth hover:border-border-strong">
@@ -33,32 +62,65 @@ export default function EmailJobCard({
         <span className="min-w-0 flex-1 truncate font-medium text-fg" title={job.name}>
           {job.name}
         </span>
-        <div className="flex items-center gap-1.5">
-          {job.tg_channels && <Badge tone="neutral">TG 监控</Badge>}
-          <Badge tone="neutral">{job.content_type.toUpperCase()}</Badge>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {isHttp ? (
+            <>
+              <Badge tone={methodTone(job.http_method || "GET")}>
+                {job.http_method || "GET"}
+              </Badge>
+              <Badge tone="neutral">HTTP 接口</Badge>
+            </>
+          ) : (
+            <>
+              {job.tg_channels && <Badge tone="neutral">TG 监控</Badge>}
+              <Badge tone="neutral">邮件</Badge>
+              <Badge tone="neutral">{job.content_type.toUpperCase()}</Badge>
+            </>
+          )}
         </div>
       </div>
 
       <div className="flex flex-col gap-1 text-xs text-fg-muted">
-        <div className="flex items-center gap-1.5 font-mono">
-          <Mail className="size-3.5 shrink-0 text-fg-subtle" aria-hidden />
-          <span className="truncate" title={job.to_emails}>
-            {job.to_emails}
-          </span>
-        </div>
-        {job.tg_channels && (
-          <div className="flex items-center gap-1.5 text-xs text-primary font-mono truncate" title={job.tg_channels}>
-            <span className="font-semibold text-[11px] rounded bg-primary/10 px-1 py-0.2">TG 频道</span>
-            <span className="truncate">{job.tg_channels}</span>
-            {job.tg_keywords && (
-              <span className="text-fg-subtle truncate text-[11px]">({job.tg_keywords})</span>
+        {isHttp ? (
+          <>
+            <div className="flex items-center gap-1.5 font-mono">
+              <Globe className="size-3.5 shrink-0 text-primary" aria-hidden />
+              <span className="truncate text-fg font-medium" title={job.http_url || ""}>
+                {job.http_url}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-fg-subtle">
+              {job.http_headers && <span>包含自定义请求头</span>}
+              {job.http_body && <span>包含请求体 (Body)</span>}
+              {!job.http_headers && !job.http_body && <span>标准 HTTP 请求</span>}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-1.5 font-mono">
+              <Mail className="size-3.5 shrink-0 text-fg-subtle" aria-hidden />
+              <span className="truncate" title={job.to_emails}>
+                {job.to_emails}
+              </span>
+            </div>
+            {job.tg_channels && (
+              <div
+                className="flex items-center gap-1.5 text-xs text-primary font-mono truncate"
+                title={job.tg_channels}
+              >
+                <span className="font-semibold text-[11px] rounded bg-primary/10 px-1 py-0.2">TG 频道</span>
+                <span className="truncate">{job.tg_channels}</span>
+                {job.tg_keywords && (
+                  <span className="text-fg-subtle truncate text-[11px]">({job.tg_keywords})</span>
+                )}
+              </div>
             )}
-          </div>
+            <div className="truncate text-fg">
+              <span className="text-fg-subtle">标题：</span>
+              <span title={job.subject}>{job.subject}</span>
+            </div>
+          </>
         )}
-        <div className="truncate text-fg">
-          <span className="text-fg-subtle">标题：</span>
-          <span title={job.subject}>{job.subject}</span>
-        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-fg-muted">
@@ -120,8 +182,8 @@ export default function EmailJobCard({
           <button
             type="button"
             className="rounded p-1 text-fg-muted transition-colors hover:bg-panel-hover hover:text-fg"
-            aria-label="查看发信历史"
-            title="查看发信历史"
+            aria-label="查看运行历史"
+            title="查看运行历史"
             onClick={onViewLogs}
           >
             <History className="size-4" aria-hidden />
@@ -129,8 +191,8 @@ export default function EmailJobCard({
           <button
             type="button"
             className={iconActionSuccess}
-            aria-label="立即发送一次"
-            title="立即发送一次"
+            aria-label="立即执行一次"
+            title="立即执行一次"
             disabled={triggering}
             onClick={onTrigger}
           >

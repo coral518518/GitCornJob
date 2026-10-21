@@ -182,6 +182,18 @@ const MIGRATIONS: Migration[] = [
       "ALTER TABLE email_jobs ADD COLUMN tg_state_json TEXT",
     ],
   },
+  {
+    // 定时任务扩展：支持 task_type（'email' | 'http'），开启接口定时调用（url、method、headers、body）
+    id: 8,
+    name: "email-jobs-http-task-type",
+    statements: [
+      "ALTER TABLE email_jobs ADD COLUMN task_type TEXT NOT NULL DEFAULT 'email'",
+      "ALTER TABLE email_jobs ADD COLUMN http_url TEXT",
+      "ALTER TABLE email_jobs ADD COLUMN http_method TEXT DEFAULT 'GET'",
+      "ALTER TABLE email_jobs ADD COLUMN http_headers TEXT",
+      "ALTER TABLE email_jobs ADD COLUMN http_body TEXT",
+    ],
+  },
 ];
 
 let migrated = false;

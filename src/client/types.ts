@@ -198,15 +198,22 @@ export type Stats = {
   failed_email_24h?: number;
 };
 
+export type TaskType = "email" | "http";
+
 export type EmailJob = {
   id: number;
   name: string;
+  task_type: TaskType;
   to_emails: string;
   cc_emails: string | null;
   bcc_emails: string | null;
   subject: string;
   content: string;
   content_type: "text" | "html" | "markdown";
+  http_url: string | null;
+  http_method: string | null;
+  http_headers: string | null;
+  http_body: string | null;
   schedule_json: string;
   enabled: number;
   next_run_at: number;

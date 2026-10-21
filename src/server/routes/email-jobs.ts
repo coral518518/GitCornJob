@@ -2,11 +2,47 @@ import { Hono } from "hono";
 import { computeNextRun, isValidTimezone, validateSchedule, type ScheduleRule } from "../schedule";
 import { getResendConfig, maskApiKey, parseApiKeys, parseEmailList, saveResendConfig, sendResendEmail } from "../email";
 import { fetchChannelPosts, parseTgChannels, parseTgKeywords, type TgPost } from "../tg-monitor";
-import { triggerEmailJobOnce } from "../email-scheduler";
+import { executeHttpRequest, triggerEmailJobOnce } from "../email-scheduler";
 import { assertChannelsExist } from "./jobs";
-import type { EmailJobRow, Env } from "../types";
+import type { EmailJobRow, Env, TaskType } from "../types";
 
 const emailJobRoutes = new Hono<{ Bindings: Env }>();
+
+// -------------------------------------------------------------
+// HTTP 接口在线测试与探测接口
+// -------------------------------------------------------------
+
+emailJobRoutes.post("/test-http", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as never);
+  const url = typeof body.url === "string" ? body.url.trim() : "";
+  if (!url) {
+    return c.json({ ok: false, error: "请填写待测试的目标接口 URL" }, 400);
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    return c.json({ ok: false, error: "接口 URL 格式不正确，必须以 http:// 或 https:// 开头" }, 400);
+  }
+  const method = typeof body.method === "string" ? body.method.trim().toUpperCase() : "GET";
+  const headers = typeof body.headers === "string" ? body.headers : (typeof body.headers === "object" ? JSON.stringify(body.headers) : "");
+  const reqBody = typeof body.body === "string" ? body.body : undefined;
+
+  const res = await executeHttpRequest({
+    url,
+    method,
+    headers,
+    body: reqBody,
+    timeoutMs: 15000,
+  });
+
+  return c.json({
+    ok: res.ok,
+    status: res.status,
+    statusText: res.statusText,
+    latencyMs: res.latencyMs,
+    headers: res.headers,
+    bodyPreview: res.bodyPreview,
+    error: res.error,
+  });
+});
 
 // -------------------------------------------------------------
 // Resend 配置与测试发信接口（支持多密钥轮询与自动备用）
@@ -152,12 +188,17 @@ emailJobRoutes.post("/test-tg", async (c) => {
 
 type EmailJobInput = {
   name: string;
+  task_type: TaskType;
   to_emails: string;
   cc_emails: string | null;
   bcc_emails: string | null;
   subject: string;
   content: string;
   content_type: "text" | "html" | "markdown";
+  http_url: string | null;
+  http_method: string | null;
+  http_headers: string | null;
+  http_body: string | null;
   notify: number;
   notify_channel_ids: string | null;
   timezone: string | null;
@@ -174,22 +215,74 @@ function validateEmailJobBody(body: Record<string, unknown>): {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name || name.length > 100) return { ok: false, error: "任务名必填（≤100 字）" };
 
-  const to_emails = typeof body.to_emails === "string" ? body.to_emails.trim() : "";
-  const parsedTo = parseEmailList(to_emails);
-  if (parsedTo.length === 0) return { ok: false, error: "请填写至少一个有效的收件人邮箱" };
+  const task_type: TaskType = body.task_type === "http" ? "http" : "email";
 
-  const cc_emails = typeof body.cc_emails === "string" && body.cc_emails.trim() ? body.cc_emails.trim() : null;
-  const bcc_emails = typeof body.bcc_emails === "string" && body.bcc_emails.trim() ? body.bcc_emails.trim() : null;
-
-  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
-  if (!subject || subject.length > 300) return { ok: false, error: "邮件标题必填（≤300 字）" };
-
-  const content = typeof body.content === "string" ? body.content.trim() : "";
-  if (!content) return { ok: false, error: "邮件内容不能为空" };
-
+  let to_emails = "";
+  let cc_emails: string | null = null;
+  let bcc_emails: string | null = null;
+  let subject = "";
+  let content = "";
   let content_type: "text" | "html" | "markdown" = "html";
-  if (body.content_type === "text" || body.content_type === "markdown" || body.content_type === "html") {
-    content_type = body.content_type;
+  let tg_channels: string | null = null;
+  let tg_keywords: string | null = null;
+
+  let http_url: string | null = null;
+  let http_method: string | null = null;
+  let http_headers: string | null = null;
+  let http_body: string | null = null;
+
+  if (task_type === "http") {
+    http_url = typeof body.http_url === "string" ? body.http_url.trim() : "";
+    if (!http_url) return { ok: false, error: "接口地址 (URL) 不能为空" };
+    if (!/^https?:\/\//i.test(http_url)) {
+      return { ok: false, error: "接口 URL 格式不正确，必须以 http:// 或 https:// 开头" };
+    }
+
+    const rawMethod = typeof body.http_method === "string" ? body.http_method.trim().toUpperCase() : "GET";
+    const validMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+    http_method = validMethods.includes(rawMethod) ? rawMethod : "GET";
+
+    if (typeof body.http_headers === "string" && body.http_headers.trim()) {
+      http_headers = body.http_headers.trim();
+    }
+    if (typeof body.http_body === "string" && body.http_body.trim() && http_method !== "GET" && http_method !== "HEAD") {
+      http_body = body.http_body;
+    }
+
+    // 默认值填充，兼容老旧 D1 NOT NULL 约束
+    to_emails = "";
+    subject = `${http_method} ${http_url}`;
+    content = "";
+    content_type = "text";
+  } else {
+    // 邮件类型任务校验
+    const rawTo = typeof body.to_emails === "string" ? body.to_emails.trim() : "";
+    const parsedTo = parseEmailList(rawTo);
+    if (parsedTo.length === 0) return { ok: false, error: "请填写至少一个有效的收件人邮箱" };
+    to_emails = parsedTo.join(", ");
+
+    cc_emails = typeof body.cc_emails === "string" && body.cc_emails.trim() ? body.cc_emails.trim() : null;
+    bcc_emails = typeof body.bcc_emails === "string" && body.bcc_emails.trim() ? body.bcc_emails.trim() : null;
+
+    subject = typeof body.subject === "string" ? body.subject.trim() : "";
+    if (!subject || subject.length > 300) return { ok: false, error: "邮件标题必填（≤300 字）" };
+
+    content = typeof body.content === "string" ? body.content.trim() : "";
+    if (!content) return { ok: false, error: "邮件内容不能为空" };
+
+    if (body.content_type === "text" || body.content_type === "markdown" || body.content_type === "html") {
+      content_type = body.content_type;
+    }
+
+    if (typeof body.tg_channels === "string" && body.tg_channels.trim()) {
+      const chs = parseTgChannels(body.tg_channels);
+      tg_channels = chs.length > 0 ? chs.join(", ") : null;
+    }
+
+    if (typeof body.tg_keywords === "string" && body.tg_keywords.trim()) {
+      const kws = parseTgKeywords(body.tg_keywords);
+      tg_keywords = kws.length > 0 ? kws.join(", ") : null;
+    }
   }
 
   const sv = validateSchedule(body.schedule);
@@ -210,28 +303,21 @@ function validateEmailJobBody(body: Record<string, unknown>): {
     if (!isValidTimezone(timezone)) return { ok: false, error: "时区名称无效（应为 IANA 时区，如 Asia/Shanghai）" };
   }
 
-  let tg_channels: string | null = null;
-  if (typeof body.tg_channels === "string" && body.tg_channels.trim()) {
-    const chs = parseTgChannels(body.tg_channels);
-    tg_channels = chs.length > 0 ? chs.join(", ") : null;
-  }
-
-  let tg_keywords: string | null = null;
-  if (typeof body.tg_keywords === "string" && body.tg_keywords.trim()) {
-    const kws = parseTgKeywords(body.tg_keywords);
-    tg_keywords = kws.length > 0 ? kws.join(", ") : null;
-  }
-
   return {
     ok: true,
     data: {
       name,
-      to_emails: parsedTo.join(", "),
+      task_type,
+      to_emails,
       cc_emails,
       bcc_emails,
       subject,
       content,
       content_type,
+      http_url,
+      http_method,
+      http_headers,
+      http_body,
       notify,
       notify_channel_ids,
       timezone,
@@ -268,19 +354,25 @@ emailJobRoutes.post("/", async (c) => {
 
   const r = await c.env.DB.prepare(
     `INSERT INTO email_jobs (
-      name, to_emails, cc_emails, bcc_emails, subject, content, content_type,
+      name, task_type, to_emails, cc_emails, bcc_emails, subject, content, content_type,
+      http_url, http_method, http_headers, http_body,
       schedule_json, notify, notify_channel_ids, timezone, tg_channels, tg_keywords, tg_state_json,
       enabled, next_run_at, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   )
     .bind(
       v.data.name,
+      v.data.task_type,
       v.data.to_emails,
       v.data.cc_emails,
       v.data.bcc_emails,
       v.data.subject,
       v.data.content,
       v.data.content_type,
+      v.data.http_url,
+      v.data.http_method,
+      v.data.http_headers,
+      v.data.http_body,
       JSON.stringify(v.schedule),
       v.data.notify,
       v.data.notify_channel_ids,
@@ -305,7 +397,7 @@ emailJobRoutes.post("/", async (c) => {
 emailJobRoutes.get("/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const job = await c.env.DB.prepare("SELECT * FROM email_jobs WHERE id=?").bind(id).first<EmailJobRow>();
-  if (!job) return c.json({ ok: false, error: "邮件任务不存在" }, 404);
+  if (!job) return c.json({ ok: false, error: "任务不存在" }, 404);
 
   const logs = await c.env.DB.prepare(
     "SELECT * FROM email_logs WHERE job_id=? ORDER BY triggered_at DESC LIMIT 20"
@@ -319,7 +411,7 @@ emailJobRoutes.get("/:id", async (c) => {
 emailJobRoutes.put("/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const existing = await c.env.DB.prepare("SELECT * FROM email_jobs WHERE id=?").bind(id).first<EmailJobRow>();
-  if (!existing) return c.json({ ok: false, error: "邮件任务不存在" }, 404);
+  if (!existing) return c.json({ ok: false, error: "任务不存在" }, 404);
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as never);
   const v = validateEmailJobBody(body);
@@ -333,19 +425,25 @@ emailJobRoutes.put("/:id", async (c) => {
 
   await c.env.DB.prepare(
     `UPDATE email_jobs SET
-      name=?, to_emails=?, cc_emails=?, bcc_emails=?, subject=?, content=?, content_type=?,
+      name=?, task_type=?, to_emails=?, cc_emails=?, bcc_emails=?, subject=?, content=?, content_type=?,
+      http_url=?, http_method=?, http_headers=?, http_body=?,
       schedule_json=?, notify=?, notify_channel_ids=?, timezone=?, tg_channels=?, tg_keywords=?,
       enabled=?, next_run_at=?, updated_at=?
     WHERE id=?`
   )
     .bind(
       v.data.name,
+      v.data.task_type,
       v.data.to_emails,
       v.data.cc_emails,
       v.data.bcc_emails,
       v.data.subject,
       v.data.content,
       v.data.content_type,
+      v.data.http_url,
+      v.data.http_method,
+      v.data.http_headers,
+      v.data.http_body,
       JSON.stringify(v.schedule),
       v.data.notify,
       v.data.notify_channel_ids,
@@ -366,7 +464,7 @@ emailJobRoutes.put("/:id", async (c) => {
 emailJobRoutes.post("/:id/toggle", async (c) => {
   const id = Number(c.req.param("id"));
   const job = await c.env.DB.prepare("SELECT * FROM email_jobs WHERE id=?").bind(id).first<EmailJobRow>();
-  if (!job) return c.json({ ok: false, error: "邮件任务不存在" }, 404);
+  if (!job) return c.json({ ok: false, error: "任务不存在" }, 404);
 
   const newEnabled = job.enabled === 1 ? 0 : 1;
   let nextRun = job.next_run_at;
@@ -389,8 +487,8 @@ emailJobRoutes.post("/:id/toggle", async (c) => {
 emailJobRoutes.post("/:id/trigger", async (c) => {
   const id = Number(c.req.param("id"));
   const outcome = await triggerEmailJobOnce(c.env, id, "manual");
-  if ("notFound" in outcome) return c.json({ ok: false, error: "邮件任务不存在" }, 404);
-  if (!outcome.ok) return c.json({ ok: false, error: outcome.error ?? "发送失败" }, 502);
+  if ("notFound" in outcome) return c.json({ ok: false, error: "任务不存在" }, 404);
+  if (!outcome.ok) return c.json({ ok: false, error: outcome.error ?? "执行失败" }, 502);
   return c.json({ ok: true, data: outcome });
 });
 

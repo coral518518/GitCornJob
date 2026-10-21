@@ -59,12 +59,12 @@ export default function Jobs() {
 
   useEffect(() => {
     load().catch(e => toast(errText(e), "err"));
-    get<Account[]>("/api/accounts").then(a => { if (alive.current) setAccounts(a); }).catch(() => {});
-    get<{ channels: Channel[] }>("/api/notify/channels").then(d => { if (alive.current) setChannels(d.channels); }).catch(() => {});
+    get<Account[]>("/api/accounts").then(a => { if (alive.current) setAccounts(a); }).catch(() => { });
+    get<{ channels: Channel[] }>("/api/notify/channels").then(d => { if (alive.current) setChannels(d.channels); }).catch(() => { });
   }, []);
 
   // 自动刷新任务列表与最近运行（60 秒）；表单抽屉打开时暂停，避免与表单快照竞态
-  useAutoRefresh(() => { load().catch(() => {}); }, 60_000, !form);
+  useAutoRefresh(() => { load().catch(() => { }); }, 60_000, !form);
 
   function open(data: JobFormData) {
     setForm(data);
@@ -134,7 +134,7 @@ export default function Jobs() {
       setTriggering(null);
       // 成败都重拉：服务端两种情况都写了 runs 记录，
       // 卡片第四行会就地显示本次结果（含失败的 HTTP 码）。
-      await load().catch(() => {});
+      await load().catch(() => { });
     }
   }
 
@@ -177,7 +177,7 @@ export default function Jobs() {
   return (
     <div>
       <PageHeader
-        title="定时任务"
+        title="定时GithubAction"
         description="按间隔或 cron 触发 GitHub Actions。"
         action={
           <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => open({ ...EMPTY_FORM })}>
