@@ -101,6 +101,7 @@ export default function EmailJobs() {
       http_method: job.http_method || "GET",
       http_headers: job.http_headers || "",
       http_body: job.http_body || "",
+      http_expected_status: job.http_expected_status || "",
       wxpusher_uids: job.wxpusher_uids || "",
       tg_bot_token: job.tg_bot_token || "",
     };
@@ -202,6 +203,7 @@ export default function EmailJobs() {
         http_method: form.http_method || undefined,
         http_headers: form.http_headers.trim() || undefined,
         http_body: form.http_body || undefined,
+        http_expected_status: form.http_expected_status.trim() || undefined,
         wxpusher_uids: form.wxpusher_uids.trim() || undefined,
         tg_bot_token: form.tg_bot_token.trim() || undefined,
         schedule: form.schedule,

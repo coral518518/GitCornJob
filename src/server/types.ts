@@ -143,6 +143,7 @@ export type EmailJobRow = {
   http_method: string | null;
   http_headers: string | null;
   http_body: string | null;
+  http_expected_status: string | null;
   wxpusher_uids: string | null;
   tg_bot_token: string | null;
   schedule_json: string;

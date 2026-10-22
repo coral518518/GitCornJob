@@ -12,6 +12,7 @@ import {
   resolveTgBotToken,
   sendWxPusherMessage,
 } from "./wxpusher";
+import { parseExpectedCodes } from "./monitor";
 import type { EmailJobRow, Env } from "./types";
 
 export type TriggerSource = "schedule" | "manual";
@@ -90,11 +91,142 @@ export function parseHttpHeaders(headersStr?: string | null): Record<string, str
   return result;
 }
 
+/**
+ * 校验 HTTP 响应是否满足配置的成功判定规则。
+ * 规则语法：[状态码规则];[响应结构/内容规则] 或 仅 [状态码规则]
+ * 例如：
+ * - "200"：仅当状态码为 200 算成功
+ * - "200,400"：状态码为 200 或 400 算成功
+ * - "200,400;data:ok=true"：状态码为 200 或 400，且响应 JSON 的 data.ok 属性值为 true
+ * - "200;code=0"：状态码为 200，且 code 为 0
+ * - "200;data.status=success"：支持 . 或 : 作为层级路径
+ */
+export function checkHttpAssertion(
+  status: number,
+  bodyText: string,
+  ruleStr: string | null | undefined
+): { ok: boolean; error?: string } {
+  const trimmed = (ruleStr ?? "").trim();
+  if (!trimmed) {
+    const is2xx = status >= 200 && status <= 299;
+    return {
+      ok: is2xx,
+      error: is2xx ? undefined : `HTTP ${status}: 响应状态码不在 2xx 成功范围内`,
+    };
+  }
+
+  const parts = trimmed.split(";");
+  const statusPart = parts[0]?.trim() || "";
+  const bodyPart = parts.slice(1).join(";").trim();
+
+  // 1. 状态码校验
+  if (statusPart) {
+    const ranges = parseExpectedCodes(statusPart);
+    const matched = ranges.some(([lo, hi]) => status >= lo && status <= hi);
+    if (!matched) {
+      const allowedStr = ranges.map(([lo, hi]) => (lo === hi ? String(lo) : `${lo}-${hi}`)).join(",");
+      return {
+        ok: false,
+        error: `HTTP ${status}: 状态码不符合期望（期望: ${allowedStr}）`,
+      };
+    }
+  } else {
+    if (status < 200 || status > 299) {
+      return {
+        ok: false,
+        error: `HTTP ${status}: 状态码不在 2xx 范围内`,
+      };
+    }
+  }
+
+  // 2. 响应结构/内容校验
+  if (!bodyPart) {
+    return { ok: true };
+  }
+
+  const assertions = bodyPart.split(",").map((s) => s.trim()).filter(Boolean);
+  if (assertions.length === 0) {
+    return { ok: true };
+  }
+
+  let jsonBody: unknown;
+  let isJson = false;
+  try {
+    jsonBody = JSON.parse(bodyText);
+    isJson = true;
+  } catch {
+    isJson = false;
+  }
+
+  for (const assertion of assertions) {
+    const eqIdx = assertion.indexOf("=");
+    if (eqIdx > 0) {
+      const pathStr = assertion.slice(0, eqIdx).trim();
+      const rawExpectedVal = assertion.slice(eqIdx + 1).trim();
+
+      if (!isJson || typeof jsonBody !== "object" || jsonBody === null) {
+        return {
+          ok: false,
+          error: `HTTP ${status} 满足，但响应体不是有效 JSON，无法校验期望「${assertion}」`,
+        };
+      }
+
+      const pathKeys = pathStr.split(/[:.]/).map((k) => k.trim()).filter(Boolean);
+      let cur: any = jsonBody;
+      let found = true;
+      for (const k of pathKeys) {
+        if (cur !== null && typeof cur === "object" && k in cur) {
+          cur = cur[k];
+        } else {
+          found = false;
+          break;
+        }
+      }
+
+      if (!found) {
+        return {
+          ok: false,
+          error: `HTTP ${status} 满足，但响应 JSON 缺少字段「${pathStr}」（期望值为 ${rawExpectedVal}）`,
+        };
+      }
+
+      let expectedVal: unknown = rawExpectedVal;
+      if (rawExpectedVal === "true") expectedVal = true;
+      else if (rawExpectedVal === "false") expectedVal = false;
+      else if (rawExpectedVal === "null") expectedVal = null;
+      else if (/^-?\d+(\.\d+)?$/.test(rawExpectedVal)) expectedVal = Number(rawExpectedVal);
+      else if (
+        (rawExpectedVal.startsWith('"') && rawExpectedVal.endsWith('"')) ||
+        (rawExpectedVal.startsWith("'") && rawExpectedVal.endsWith("'"))
+      ) {
+        expectedVal = rawExpectedVal.slice(1, -1);
+      }
+
+      if (cur !== expectedVal && String(cur) !== String(expectedVal)) {
+        return {
+          ok: false,
+          error: `HTTP ${status} 满足，但字段「${pathStr}」不匹配: 期望 ${String(expectedVal)}，实际为 ${JSON.stringify(cur)}`,
+        };
+      }
+    } else {
+      if (!bodyText.includes(assertion)) {
+        return {
+          ok: false,
+          error: `HTTP ${status} 满足，但响应体不包含期望内容「${assertion}」`,
+        };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
 export async function executeHttpRequest(opts: {
   url: string;
   method?: string;
   headers?: string | Record<string, string> | null;
   body?: string | null;
+  expectedStatus?: string | null;
   timeoutMs?: number;
 }): Promise<{
   ok: boolean;
@@ -163,7 +295,12 @@ export async function executeHttpRequest(opts: {
     }
     const bodyPreview = resBody.slice(0, 500);
 
-    const isSuccess = res.ok; // 状态码 200..299 判定为成功
+    const check = checkHttpAssertion(res.status, resBody, opts.expectedStatus);
+    const isSuccess = check.ok;
+    let errorDetail = check.error;
+    if (!isSuccess && errorDetail && bodyPreview && !errorDetail.includes(bodyPreview.slice(0, 30))) {
+      errorDetail = `${errorDetail}: ${bodyPreview.slice(0, 150)}`.trim();
+    }
     return {
       ok: isSuccess,
       status: res.status,
@@ -171,7 +308,7 @@ export async function executeHttpRequest(opts: {
       headers: resHeaders,
       latencyMs,
       bodyPreview,
-      error: isSuccess ? undefined : `HTTP ${res.status} ${res.statusText || ""}: ${bodyPreview.slice(0, 150)}`.trim(),
+      error: isSuccess ? undefined : (errorDetail || `HTTP ${res.status}: ${bodyPreview.slice(0, 150)}`.trim()),
     };
   } catch (err: unknown) {
     const latencyMs = Date.now() - start;
@@ -212,6 +349,7 @@ export async function dispatchHttpJob(
     method,
     headers: finalHeaders,
     body: finalBody,
+    expectedStatus: job.http_expected_status,
     timeoutMs: 15000,
   });
 

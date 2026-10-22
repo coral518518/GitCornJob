@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   http_method TEXT DEFAULT 'GET',
   http_headers TEXT,
   http_body TEXT,
+  http_expected_status TEXT,
   -- 微信 ClawBot 配置（task_type = 'clawbot' 时生效）
   wxpusher_uids TEXT,
   tg_bot_token TEXT,

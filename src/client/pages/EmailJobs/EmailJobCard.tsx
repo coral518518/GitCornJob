@@ -98,9 +98,14 @@ export default function EmailJobCard({
               </span>
             </div>
             <div className="flex items-center gap-2 text-fg-subtle">
-              {job.http_headers && <span>包含自定义请求头</span>}
-              {job.http_body && <span>包含请求体 (Body)</span>}
-              {!job.http_headers && !job.http_body && <span>标准 HTTP 请求</span>}
+              {job.http_expected_status && (
+                <span className="font-mono text-[11px] text-primary" title={`期望成功判定: ${job.http_expected_status}`}>
+                  期望: {job.http_expected_status}
+                </span>
+              )}
+              {job.http_headers && <span>包含请求头</span>}
+              {job.http_body && <span>包含请求体</span>}
+              {!job.http_headers && !job.http_body && !job.http_expected_status && <span>标准 HTTP 请求</span>}
             </div>
           </>
         ) : isClawBot ? (

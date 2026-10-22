@@ -203,6 +203,14 @@ const MIGRATIONS: Migration[] = [
       "ALTER TABLE email_jobs ADD COLUMN tg_bot_token TEXT",
     ],
   },
+  {
+    // 定时任务扩展：HTTP 接口支持配置成功响应判定规则（如 200,400;data:ok=true）
+    id: 10,
+    name: "email-jobs-http-expected-status",
+    statements: [
+      "ALTER TABLE email_jobs ADD COLUMN http_expected_status TEXT",
+    ],
+  },
 ];
 
 let migrated = false;

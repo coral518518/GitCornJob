@@ -42,6 +42,7 @@ export type EmailJobFormData = {
   http_method: string;
   http_headers: string;
   http_body: string;
+  http_expected_status: string;
   // 微信 ClawBot (WxPusher) 字段
   wxpusher_uids: string;
   tg_bot_token: string;
@@ -68,6 +69,7 @@ export const EMPTY_EMAIL_FORM: EmailJobFormData = {
   http_method: "GET",
   http_headers: "",
   http_body: "",
+  http_expected_status: "",
   wxpusher_uids: "",
   tg_bot_token: "",
   schedule: EMPTY_SCHEDULE,
@@ -369,6 +371,7 @@ export default function EmailJobForm({
         method: form.http_method,
         headers: form.http_headers,
         body: form.http_body,
+        expected_status: form.http_expected_status,
       });
       setHttpTestResult(res);
     } catch (e) {
@@ -781,6 +784,22 @@ export default function EmailJobForm({
                     )}
                   </Field>
                 )}
+
+                {/* 成功响应判定规则 */}
+                <Field
+                  label="成功响应判定 (可选)"
+                  hint="分号前为期望状态码，分号后为响应结构判定。如「200,400;data:ok=true」表示状态码为 200 或 400 且包含 data 下的 ok 为 true；若仅填「200」则只判断状态码；留空默认 200~299"
+                >
+                  {({ id }) => (
+                    <Input
+                      id={id}
+                      className="font-mono text-xs"
+                      placeholder="例如：200,400;data:ok=true 或 200;code=0 或 200"
+                      value={form.http_expected_status}
+                      onChange={(e) => set({ http_expected_status: e.target.value })}
+                    />
+                  )}
+                </Field>
 
                 {/* 接口测试结果提示 */}
                 {httpTestResult && (

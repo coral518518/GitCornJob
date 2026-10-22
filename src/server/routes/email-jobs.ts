@@ -166,12 +166,18 @@ emailJobRoutes.post("/test-http", async (c) => {
   const method = typeof body.method === "string" ? body.method.trim().toUpperCase() : "GET";
   const headers = typeof body.headers === "string" ? body.headers : (typeof body.headers === "object" ? JSON.stringify(body.headers) : "");
   const reqBody = typeof body.body === "string" ? body.body : undefined;
+  const expectedStatus = typeof body.expected_status === "string"
+    ? body.expected_status
+    : typeof body.http_expected_status === "string"
+    ? body.http_expected_status
+    : undefined;
 
   const res = await executeHttpRequest({
     url,
     method,
     headers,
     body: reqBody,
+    expectedStatus,
     timeoutMs: 15000,
   });
 
@@ -344,6 +350,7 @@ type EmailJobInput = {
   http_method: string | null;
   http_headers: string | null;
   http_body: string | null;
+  http_expected_status: string | null;
   wxpusher_uids: string | null;
   tg_bot_token: string | null;
   notify: number;
@@ -381,6 +388,7 @@ function validateEmailJobBody(body: Record<string, unknown>): {
   let http_method: string | null = null;
   let http_headers: string | null = null;
   let http_body: string | null = null;
+  let http_expected_status: string | null = null;
 
   let wxpusher_uids: string | null = null;
   let tg_bot_token: string | null = null;
@@ -414,6 +422,9 @@ function validateEmailJobBody(body: Record<string, unknown>): {
     }
     if (typeof body.http_body === "string" && body.http_body.trim() && http_method !== "GET" && http_method !== "HEAD") {
       http_body = body.http_body;
+    }
+    if (typeof body.http_expected_status === "string" && body.http_expected_status.trim()) {
+      http_expected_status = body.http_expected_status.trim();
     }
 
     // 默认值填充，兼容老旧 D1 NOT NULL 约束
@@ -485,6 +496,7 @@ function validateEmailJobBody(body: Record<string, unknown>): {
       http_method,
       http_headers,
       http_body,
+      http_expected_status,
       wxpusher_uids,
       tg_bot_token,
       notify,
@@ -524,11 +536,11 @@ emailJobRoutes.post("/", async (c) => {
   const r = await c.env.DB.prepare(
     `INSERT INTO email_jobs (
       name, task_type, to_emails, cc_emails, bcc_emails, subject, content, content_type,
-      http_url, http_method, http_headers, http_body,
+      http_url, http_method, http_headers, http_body, http_expected_status,
       wxpusher_uids, tg_bot_token,
       schedule_json, notify, notify_channel_ids, timezone, tg_channels, tg_keywords, tg_state_json,
       enabled, next_run_at, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   )
     .bind(
       v.data.name,
@@ -543,6 +555,7 @@ emailJobRoutes.post("/", async (c) => {
       v.data.http_method,
       v.data.http_headers,
       v.data.http_body,
+      v.data.http_expected_status,
       v.data.wxpusher_uids,
       v.data.tg_bot_token,
       JSON.stringify(v.schedule),
@@ -598,7 +611,7 @@ emailJobRoutes.put("/:id", async (c) => {
   await c.env.DB.prepare(
     `UPDATE email_jobs SET
       name=?, task_type=?, to_emails=?, cc_emails=?, bcc_emails=?, subject=?, content=?, content_type=?,
-      http_url=?, http_method=?, http_headers=?, http_body=?,
+      http_url=?, http_method=?, http_headers=?, http_body=?, http_expected_status=?,
       wxpusher_uids=?, tg_bot_token=?,
       schedule_json=?, notify=?, notify_channel_ids=?, timezone=?, tg_channels=?, tg_keywords=?,
       enabled=?, next_run_at=?, updated_at=?
@@ -617,6 +630,7 @@ emailJobRoutes.put("/:id", async (c) => {
       v.data.http_method,
       v.data.http_headers,
       v.data.http_body,
+      v.data.http_expected_status,
       v.data.wxpusher_uids,
       v.data.tg_bot_token,
       JSON.stringify(v.schedule),
