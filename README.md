@@ -125,11 +125,20 @@ on:
 账户菜单 →「API 令牌」创建令牌（明文只展示一次），外部系统调用：
 
 ```bash
+# 1. 跑一轮完整调度（到期 GithubAction + 到期定时任务 + 到期监控探测）
 curl -X POST https://<你的域名>/api/trigger \
+  -H "Authorization: Bearer chb_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# 2. 单独触发指定的「定时GithubAction」（按 jobs 表 ID）
+curl -X POST https://<你的域名>/api/trigger/jobs/<job_id> \
+  -H "Authorization: Bearer chb_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# 3. 单独触发指定的「定时任务」（邮件/HTTP/微信等，按 email_jobs 表 ID）
+curl -X POST https://<你的域名>/api/trigger/tasks/<task_id> \
   -H "Authorization: Bearer chb_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-每次执行一轮完整调度（到期任务 + 到期监控），返回 `{ triggered, failed, probed, down }`，并刷新调度器心跳。调度来源三种形态：
+调用 `/api/trigger` 执行一轮完整调度时，返回 `{ triggered, failed, probed, down, emailTriggered, emailFailed }`，并刷新调度器心跳。调度来源三种形态：
 
 | 形态 | 配置 |
 |---|---|

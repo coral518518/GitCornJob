@@ -138,12 +138,17 @@ export default function TokensDialog({ open, onClose }: Props) {
         <div className="space-y-6">
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-subtle">外部触发接口</h3>
-            <div className="rounded-lg border border-border bg-surface px-3 py-2.5">
+            <div className="rounded-lg border border-border bg-surface px-3 py-2.5 space-y-1.5">
               <p className="font-mono text-xs break-all text-fg">{ENDPOINT_EXAMPLE}</p>
-              <p className="mt-1.5 text-xs text-fg-subtle">
-                请求头携带 <code className="font-mono">Authorization: Bearer &lt;令牌&gt;</code>
-                ，每次执行一轮完整调度（到期任务 + 到期监控探测）。限频 5 次/分钟。
+              <p className="text-xs text-fg-subtle">
+                请求头携带 <code className="font-mono">Authorization: Bearer &lt;令牌&gt;</code>。
               </p>
+              <ul className="text-xs text-fg-subtle list-disc list-inside space-y-0.5">
+                <li>完整调度：<code className="font-mono">POST /api/trigger</code></li>
+                <li>指定 GithubAction：<code className="font-mono">POST /api/trigger/jobs/:id</code></li>
+                <li>指定定时任务：<code className="font-mono">POST /api/trigger/tasks/:id</code></li>
+              </ul>
+              <p className="text-xs text-fg-subtle">限频 5 次/分钟；令牌可随时撤销。</p>
             </div>
           </section>
 

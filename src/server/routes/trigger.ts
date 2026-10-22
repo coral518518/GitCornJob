@@ -1,8 +1,9 @@
 import { createMiddleware } from "hono/factory";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { sha256Hex } from "../crypto";
-import { runDueJobs, type WaitUntilHost } from "../scheduler";
+import { runDueJobs, triggerJobOnce, type WaitUntilHost } from "../scheduler";
 import { runDueMonitors } from "../monitor";
+import { runDueEmailJobs, triggerEmailJobOnce } from "../email-scheduler";
 import type { ApiTokenRow, Env } from "../types";
 
 /** 外部触发令牌校验：Bearer 令牌 → SHA-256 哈希查库，命中后更新 last_used_at。
@@ -33,8 +34,8 @@ export const requireApiToken = createMiddleware<{ Bindings: Env }>(async (c, nex
 const triggerRoutes = new Hono<{ Bindings: Env }>();
 triggerRoutes.use("*", requireApiToken);
 
-// 跑一轮完整调度，与 scheduled 处理器同构：到期任务 + 到期监控探测，调度器
-// 心跳随 runDueJobs 内部按 10 分钟整点写入（节约 D1 写入配额）。两函数都
+// 跑一轮完整调度，与 scheduled 处理器同构：到期任务 + 到期监控探测 + 到期定时任务（邮件/HTTP/ClawBot），调度器
+// 心跳随 runDueJobs 内部按 10 分钟整点写入（节约 D1 写入配额）。各函数都
 // 绝不外抛；与平台 cron 并存也安全——任务认领靠乐观锁，重复唤醒只会空跑。
 triggerRoutes.post("/", async (c) => {
   // 第二层限流：令牌校验通过后的全局配额，保护调度本体不被高频触发
@@ -51,14 +52,49 @@ triggerRoutes.post("/", async (c) => {
   try {
     ctx = c.executionCtx;
   } catch { /* 测试环境无 ExecutionContext */ }
-  const [jobs, monitors] = await Promise.all([
+  const [jobs, monitors, emailJobs] = await Promise.all([
     runDueJobs(c.env, now, ctx),
     runDueMonitors(c.env, now, ctx),
+    runDueEmailJobs(c.env, now, ctx),
   ]);
   return c.json({
     ok: true,
-    data: { triggered: jobs.triggered, failed: jobs.failed, probed: monitors.probed, down: monitors.down },
+    data: {
+      triggered: jobs.triggered,
+      failed: jobs.failed,
+      probed: monitors.probed,
+      down: monitors.down,
+      emailTriggered: emailJobs.triggered,
+      emailFailed: emailJobs.failed,
+    },
   });
 });
+
+// 单独触发指定的「定时GithubAction」
+triggerRoutes.post("/jobs/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id < 1) {
+    return c.json({ ok: false, error: "任务 ID 无效" }, 400);
+  }
+  const result = await triggerJobOnce(c.env, id, "manual");
+  if ("notFound" in result) return c.json({ ok: false, error: "GithubAction 任务不存在" }, 404);
+  if (!result.ok) return c.json({ ok: false, error: result.error ?? "触发失败" }, 502);
+  return c.json({ ok: true, data: null });
+});
+
+// 单独触发指定的「定时任务」（邮件 / HTTP 接口 / 微信 ClawBot）
+async function handleTriggerTask(c: Context<{ Bindings: Env }>) {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id < 1) {
+    return c.json({ ok: false, error: "任务 ID 无效" }, 400);
+  }
+  const outcome = await triggerEmailJobOnce(c.env, id, "manual");
+  if ("notFound" in outcome) return c.json({ ok: false, error: "定时任务不存在" }, 404);
+  if (!outcome.ok) return c.json({ ok: false, error: outcome.error ?? "执行失败" }, 502);
+  return c.json({ ok: true, data: outcome });
+}
+
+triggerRoutes.post("/tasks/:id", handleTriggerTask);
+triggerRoutes.post("/email-jobs/:id", handleTriggerTask);
 
 export default triggerRoutes;
