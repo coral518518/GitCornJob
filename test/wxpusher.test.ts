@@ -6,8 +6,8 @@ import {
   parseWxPusherUids,
   resolveTgBotToken,
   type TgUpdate,
-} from "./wxpusher";
-import type { Env } from "./types";
+} from "../src/server/wxpusher";
+import type { Env } from "../src/server/types";
 
 describe("wxpusher helper functions", () => {
   describe("extractTgBotToken", () => {

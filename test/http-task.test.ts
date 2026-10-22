@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkHttpAssertion, executeHttpRequest, parseHttpHeaders } from "./email-scheduler";
+import { checkHttpAssertion, executeHttpRequest, parseHttpHeaders } from "../src/server/email-scheduler";
 
 describe("HTTP task execution & header parser", () => {
   describe("parseHttpHeaders", () => {

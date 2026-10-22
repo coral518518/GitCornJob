@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { interpolateTemplate, markdownToHtml, parseApiKeys, parseEmailList, pickRandomApiKey, sendResendEmail } from "./email";
+import { interpolateTemplate, markdownToHtml, parseApiKeys, parseEmailList, pickRandomApiKey, sendResendEmail } from "../src/server/email";
 
 describe("email utilities", () => {
   describe("parseEmailList", () => {

@@ -4,7 +4,6 @@ dist/
 .dev.vars
 .dev.vars.example
 /docs/
-/test/
 /vitest.config.ts
 .superpowers/
 .zcode/

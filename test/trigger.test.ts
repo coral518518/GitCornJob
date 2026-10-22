@@ -1,21 +1,21 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import triggerRoutes from "./trigger";
-import { sha256Hex } from "../crypto";
-import { runDueJobs, triggerJobOnce } from "../scheduler";
-import { runDueMonitors } from "../monitor";
-import { runDueEmailJobs, triggerEmailJobOnce } from "../email-scheduler";
-import type { Env } from "../types";
+import triggerRoutes from "../src/server/routes/trigger";
+import { sha256Hex } from "../src/server/crypto";
+import { runDueJobs, triggerJobOnce } from "../src/server/scheduler";
+import { runDueMonitors } from "../src/server/monitor";
+import { runDueEmailJobs, triggerEmailJobOnce } from "../src/server/email-scheduler";
+import type { Env } from "../src/server/types";
 
-vi.mock("../scheduler", () => ({
+vi.mock("../src/server/scheduler", () => ({
   runDueJobs: vi.fn(),
   triggerJobOnce: vi.fn(),
 }));
 
-vi.mock("../monitor", () => ({
+vi.mock("../src/server/monitor", () => ({
   runDueMonitors: vi.fn(),
 }));
 
-vi.mock("../email-scheduler", () => ({
+vi.mock("../src/server/email-scheduler", () => ({
   runDueEmailJobs: vi.fn(),
   triggerEmailJobOnce: vi.fn(),
 }));
